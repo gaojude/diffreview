@@ -1,40 +1,33 @@
+import Foundation
 import SwiftUI
 
 struct SelectionChatPopoverView: View {
     @ObservedObject var chat: SelectionChatController
+    @FocusState private var isComposerFocused: Bool
+
+    private let bottomID = "selection-chat-bottom"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
             header
 
-            if !chat.answer.isEmpty || !chat.toolEvents.isEmpty {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if !chat.toolEvents.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ForEach(chat.toolEvents) { event in
-                                    AgentToolEventRow(event: event)
-                                }
-                            }
-                        }
-
-                        if !chat.answer.isEmpty {
-                            Text(chat.answer)
-                                .font(.callout)
-                                .foregroundStyle(.primary)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-                .frame(maxHeight: 260)
+            if hasTranscript {
+                Divider()
+                transcript
             }
 
+            Divider()
             composer
         }
-        .padding(12)
-        .frame(width: 430)
+        .frame(width: 460)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("selection-chat-popover")
+        .onAppear(perform: focusComposer)
+        .onChange(of: chat.isBusy) { _, isBusy in
+            if !isBusy {
+                focusComposer()
+            }
+        }
     }
 
     private var header: some View {
@@ -64,6 +57,55 @@ struct SelectionChatPopoverView: View {
             .buttonStyle(.borderless)
             .help("Close")
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if !chat.submittedQuestion.isEmpty {
+                        UserQuestionBubble(text: chat.submittedQuestion)
+                    }
+
+                    if !chat.toolEvents.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(chat.toolEvents) { event in
+                                AgentToolEventRow(event: event)
+                            }
+                        }
+                    }
+
+                    if !chat.answer.isEmpty {
+                        AssistantAnswerBlock(text: chat.answer)
+                    } else if chat.isBusy {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(chat.currentActivity.isEmpty ? "Thinking" : chat.currentActivity)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomID)
+                }
+                .padding(12)
+            }
+            .frame(maxHeight: 320)
+            .onChange(of: chat.answer) { _, _ in
+                scrollToBottom(proxy)
+            }
+            .onChange(of: chat.toolEvents) { _, _ in
+                scrollToBottom(proxy)
+            }
+            .onChange(of: chat.submittedQuestion) { _, _ in
+                scrollToBottom(proxy)
+            }
+        }
     }
 
     private var composer: some View {
@@ -71,20 +113,53 @@ struct SelectionChatPopoverView: View {
             TextField("Ask about the selection", text: $chat.draft, axis: .vertical)
                 .lineLimit(1...4)
                 .textFieldStyle(.roundedBorder)
+                .focused($isComposerFocused)
                 .disabled(chat.isBusy)
+                .submitLabel(.send)
                 .onSubmit {
                     chat.submit()
                 }
+                .accessibilityIdentifier("selection-chat-input")
 
-            Button {
-                chat.submit()
-            } label: {
-                Image(systemName: chat.isBusy ? "hourglass" : "paperplane.fill")
-                    .frame(width: 18, height: 18)
+            if chat.isBusy {
+                Button {
+                    chat.cancelResponse()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .frame(width: 18, height: 18)
+                }
+                .keyboardShortcut(".", modifiers: .command)
+                .help("Stop")
+            } else {
+                Button {
+                    chat.submit()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .frame(width: 18, height: 18)
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!chat.canSubmit)
+                .help("Send")
             }
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!chat.canSubmit)
-            .help(chat.isBusy ? "Waiting for answer" : "Send")
+        }
+        .padding(12)
+    }
+
+    private var hasTranscript: Bool {
+        !chat.submittedQuestion.isEmpty || !chat.answer.isEmpty || !chat.toolEvents.isEmpty || chat.isBusy
+    }
+
+    private func focusComposer() {
+        DispatchQueue.main.async {
+            isComposerFocused = true
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.16)) {
+                proxy.scrollTo(bottomID, anchor: .bottom)
+            }
         }
     }
 
@@ -113,41 +188,84 @@ struct SelectionChatPopoverView: View {
     }
 }
 
-private struct AgentToolEventRow: View {
-    let event: AgentToolEvent
+private struct UserQuestionBubble: View {
+    let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Image(systemName: event.status == .finished ? "checkmark.circle.fill" : "circle.dotted")
-                    .foregroundStyle(event.status == .finished ? .green : .secondary)
-                    .frame(width: 14)
+        HStack(alignment: .top) {
+            Spacer(minLength: 48)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.white)
+                .textSelection(.enabled)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor)
+                )
+        }
+    }
+}
+
+private struct AssistantAnswerBlock: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+                .padding(.top, 2)
+
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct AgentToolEventRow: View {
+    let event: AgentToolEvent
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                if !formattedArguments.isEmpty {
+                    ToolDetailBlock(title: "Arguments", text: formattedArguments)
+                }
+
+                if let outputPreview = event.outputPreview {
+                    ToolDetailBlock(title: "Output", text: outputPreview)
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            HStack(spacing: 7) {
+                if event.status == .finished {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .frame(width: 14)
+                } else {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 14)
+                }
+
                 Text(event.name)
                     .font(.caption)
                     .fontWeight(.medium)
                     .monospaced()
+
                 Spacer(minLength: 8)
+
                 Text(event.status == .finished ? "done" : "running")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-
-            if !event.arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(event.arguments)
-                    .font(.caption2)
-                    .monospaced()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-            }
-
-            if let outputPreview = event.outputPreview {
-                Text(outputPreview)
-                    .font(.caption2)
-                    .monospaced()
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(3)
-                    .textSelection(.enabled)
             }
         }
         .padding(.horizontal, 8)
@@ -156,5 +274,39 @@ private struct AgentToolEventRow: View {
             RoundedRectangle(cornerRadius: 7)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
         )
+    }
+
+    private var formattedArguments: String {
+        let trimmed = event.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let data = trimmed.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data),
+            JSONSerialization.isValidJSONObject(object),
+            let formatted = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+            let text = String(data: formatted, encoding: .utf8)
+        else {
+            return trimmed
+        }
+        return text
+    }
+}
+
+private struct ToolDetailBlock: View {
+    let title: String
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption2)
+                .monospaced()
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+                .lineLimit(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }

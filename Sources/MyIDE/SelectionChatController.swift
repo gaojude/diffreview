@@ -12,6 +12,7 @@ final class SelectionChatController: ObservableObject {
 
     @Published private(set) var phase: Phase = .closed
     @Published var draft = ""
+    @Published private(set) var submittedQuestion = ""
     @Published private(set) var answer = ""
     @Published private(set) var contextLabel: String?
     @Published private(set) var currentActivity = ""
@@ -58,6 +59,7 @@ final class SelectionChatController: ObservableObject {
         activeRootURL = rootURL
         contextLabel = context.locationLabel
         currentActivity = ""
+        submittedQuestion = ""
         answer = ""
         toolEvents = []
         draft = ""
@@ -70,10 +72,17 @@ final class SelectionChatController: ObservableObject {
         activeRootURL = nil
         contextLabel = nil
         currentActivity = ""
+        submittedQuestion = ""
         answer = ""
         toolEvents = []
         draft = ""
         phase = .closed
+    }
+
+    func cancelResponse() {
+        cancelActiveTask()
+        currentActivity = ""
+        phase = .composing
     }
 
     func submit() {
@@ -85,6 +94,7 @@ final class SelectionChatController: ObservableObject {
 
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         draft = ""
+        submittedQuestion = question
         answer = ""
         toolEvents = []
         currentActivity = "Inspecting the diff"
