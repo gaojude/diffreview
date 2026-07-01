@@ -17,7 +17,7 @@ thin `my-ide` command — like `code .`, but native.
 - **Voice codebase agent** — select code, click the microphone that appears beside the
   selection, ask a question aloud, and get a streamed AI response. The selection anchors a
   read-only local agent loop: the model must inspect the Git diff first, then can call local
-  tools for file listing, file reads, and text search as needed.
+  tools for full-codebase file listing, file reads, and text search as needed.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -52,9 +52,9 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 ## Voice questions
 
 Voice questions use Apple Speech for local speech-to-text, a streaming Chat Completions agent
-for the answer, hosted text-to-speech for spoken progress/summary, and macOS speech synthesis
+for the answer, hosted text-to-speech for the final spoken summary, and macOS speech synthesis
 only as a fallback. Select a range in the code viewer, then click the inline microphone beside
-the selection.
+the selection. Tool progress is shown in the panel instead of being spoken aloud.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
@@ -74,7 +74,9 @@ my-ide .
 On first use, macOS asks for Microphone and Speech Recognition permission. The first request
 sends only the spoken question, the selected lines, and the changed-file summary. After that, the
 model can call read-only local tools: `get_git_diff`, `list_files`, `read_file`, and
-`search_text`. Generated/dependency directories such as `.git`, `.build`, `build`, and
+`search_text`. `get_git_diff` is prioritized first for branch-review semantics, while
+`list_files`, `read_file`, and `search_text` can inspect the rest of the opened codebase.
+Generated/dependency directories such as `.git`, `.build`, `build`, and
 `node_modules` are ignored. A real selection is required before voice ask starts.
 
 ## Testing

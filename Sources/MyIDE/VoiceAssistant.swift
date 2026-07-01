@@ -144,14 +144,12 @@ final class VoiceQuestionController: NSObject, ObservableObject {
                 throw VoiceAssistantError.invalidResponse
             }
             currentActivity = "Let me inspect the diff first."
-            speakProgress(currentActivity)
             let reply = try await client.ask(
                 question: question,
                 context: context,
                 rootURL: rootURL,
                 onProgress: { [weak self] message in
                     self?.currentActivity = message
-                    self?.speakProgress(message)
                 },
                 onDelta: { [weak self] delta in
                     self?.answer += delta
@@ -274,15 +272,6 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.speechPlayer.speak(text)
-        }
-    }
-
-    private func speakProgress(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            await self.speechPlayer.speak(trimmed)
         }
     }
 

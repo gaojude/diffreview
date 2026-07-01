@@ -18,19 +18,25 @@ struct StreamingCodeAgentClient {
             .user(initialPrompt(question: question, context: context, toolbox: toolbox)),
         ]
 
-        var finalText = ""
-
         for _ in 0..<8 {
             let result = try await streamChatCompletion(
                 configuration: configuration,
                 messages: messages,
                 tools: CodebaseAgentToolbox.toolDefinitions,
+                toolChoice: "auto",
                 onDelta: onDelta
             )
-            finalText += result.content
 
             guard !result.toolCalls.isEmpty else {
-                return finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = result.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty {
+                    return try await forceFinalAnswer(
+                        configuration: configuration,
+                        messages: messages,
+                        onDelta: onDelta
+                    )
+                }
+                return text
             }
 
             messages.append(.assistant(content: result.content, toolCalls: result.toolCalls))
@@ -51,25 +57,33 @@ struct StreamingCodeAgentClient {
             }
         }
 
-        let fallback = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return fallback.isEmpty ? "I inspected the available context but did not get a final answer." : fallback
+        return try await forceFinalAnswer(
+            configuration: configuration,
+            messages: messages,
+            onDelta: onDelta
+        )
     }
 
     private func streamChatCompletion(
         configuration: APIConfiguration,
         messages: [ChatMessage],
         tools: [[String: Any]],
+        toolChoice: String?,
         onDelta: @escaping DeltaHandler
     ) async throws -> StreamResult {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": configuration.model,
             "messages": messages.map(\.dictionary),
-            "tools": tools,
-            "tool_choice": "auto",
             "stream": true,
             "temperature": 0.2,
             "max_tokens": 1_000,
         ]
+        if !tools.isEmpty {
+            payload["tools"] = tools
+        }
+        if let toolChoice {
+            payload["tool_choice"] = toolChoice
+        }
 
         var request = URLRequest(url: configuration.baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
@@ -135,6 +149,31 @@ struct StreamingCodeAgentClient {
         return StreamResult(content: content, toolCalls: toolCalls)
     }
 
+    private func forceFinalAnswer(
+        configuration: APIConfiguration,
+        messages: [ChatMessage],
+        onDelta: @escaping DeltaHandler
+    ) async throws -> String {
+        var finalMessages = messages
+        finalMessages.append(.user("""
+        Stop using tools now. Based only on the tool results already available, answer the user's question directly.
+        If the tool results are insufficient, say what is missing in one sentence.
+        """))
+
+        let result = try await streamChatCompletion(
+            configuration: configuration,
+            messages: finalMessages,
+            tools: [],
+            toolChoice: nil,
+            onDelta: onDelta
+        )
+        let text = result.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw AgentClientError.invalidResponse
+        }
+        return text
+    }
+
     private func apiConfiguration() throws -> APIConfiguration {
         if let gatewayKey = environmentValue("AI_GATEWAY_API_KEY") {
             return APIConfiguration(
@@ -169,8 +208,9 @@ struct StreamingCodeAgentClient {
         You are a concise senior code agent inside a native macOS IDE.
         The user selected code and asked by voice. Treat the selection as the anchor, but inspect the repo with tools.
         Always inspect git diff semantics first with get_git_diff before broader search/read calls.
+        You may inspect the whole opened codebase through list_files, read_file, and search_text, but only request the specific files or searches you need.
         Use read-only tools only. Never ask for broad code dumps.
-        The app speaks local progress messages for tool calls, so do not write "let me check" narration in the final answer.
+        The app shows local progress messages for tool calls, so do not write "let me check" narration in the final answer.
         Do not read code literally to the user. Avoid quoting code unless a tiny identifier is essential.
         Final answer: explain what matters, cite files/lines when useful, and keep it short enough to speak aloud.
         """
