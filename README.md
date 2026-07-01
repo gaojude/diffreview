@@ -14,11 +14,11 @@ thin `my-ide` command — like `code .`, but native.
 - **Right diff pane** — selecting a changed file shows its Git patch against the PR merge-base
   plus local working-tree edits. Additions, deletions, hunks, and metadata are styled in a
   native `NSTextView`; oversized diffs show a placeholder instead of hanging.
-- **Selection chat agent** — select code, click the chat bubble beside the selection, type a
-  temporary question, and get a streamed Markdown AI response. File references like
-  `path/to/file.ts:12-18` are clickable and open in the secondary code pane. The selection
-  anchors a read-only local agent loop: the model must inspect the Git diff first, then can call
-  local tools for full-codebase file listing, file reads, and text search as needed.
+- **Selection chat agent** — select code, type in the persistent agent chat pane, and get a
+  streamed Markdown AI response. File references like `path/to/file.ts:12-18` are clickable and
+  replace the main code pane with that source file/range. The selection anchors a read-only local
+  agent loop: the model must inspect the Git diff first, then can call local tools for
+  full-codebase file listing, file reads, and text search as needed.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -52,14 +52,14 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 
 ## Selection chat
 
-Selection chat uses a streaming Chat Completions agent. Select a range in the code viewer, then
-click the inline chat bubble beside the selection. A temporary overlay opens at the selection:
-type a question, send it, and watch the Markdown answer stream while read-only tool calls render
-in the overlay. Chat text follows the same font size as the code viewer.
+Selection chat uses a streaming Chat Completions agent. The app has three work areas: the
+sidebar tree, the code pane, and the agent chat pane. Select a range in the code viewer, type a
+question in the chat pane, and watch the Markdown answer stream while read-only tool calls
+render in the chat pane. Chat text follows the same font size as the code viewer.
 
-The detail area has two code panes: the main changed file and a secondary reference pane. Click
-repo-relative references such as `packages/app/page.tsx:24-31` in chat or tool output to load
-that file in the secondary pane and highlight the cited lines.
+Click repo-relative references such as `packages/app/page.tsx:24-31` in chat or tool output to
+load that file in the code pane and highlight the cited lines. You can then select code in that
+newly loaded file and continue asking questions from the same chat pane.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
@@ -86,7 +86,7 @@ just the toolchain:
 
 ```sh
 ./scripts/selftest.sh    # pure-logic assertions (Git changes, sort, binary sniff, path resolution)
-./scripts/selection-chat-ui-test.sh # native overlay layout harness for selection chat
+./scripts/selection-chat-ui-test.sh # native pane layout harness for selection chat
 ./scripts/e2e.sh         # self-test → build → launch on a fixture → assert window via a11y → screenshot
 ```
 

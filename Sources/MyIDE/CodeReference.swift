@@ -1,4 +1,5 @@
 import Foundation
+import MyIDECore
 
 struct CodeReference: Equatable, Hashable, Identifiable, Sendable {
     let path: String
@@ -131,4 +132,91 @@ enum CodeReferenceParser {
         guard range.location != NSNotFound else { return nil }
         return Int(string.substring(with: range))
     }
+}
+
+struct LoadedCodeReference: Sendable {
+    let url: URL
+    let path: String
+    let text: String
+}
+
+enum CodeReferenceLoadResult: Sendable {
+    case loaded(LoadedCodeReference)
+    case failed(String)
+}
+
+enum CodeReferenceResolver {
+    nonisolated static func load(reference: CodeReference, rootURL: URL) -> CodeReferenceLoadResult {
+        guard let resolved = resolve(reference: reference, rootURL: rootURL) else {
+            return .failed("Could not find \(reference.path).")
+        }
+
+        guard let data = try? Data(contentsOf: resolved.url, options: [.mappedIfSafe]) else {
+            return .failed("Could not read \(resolved.path).")
+        }
+        guard !FileSystem.isProbablyBinary(data) else {
+            return .failed("\(resolved.path) appears to be binary.")
+        }
+        return .loaded(LoadedCodeReference(url: resolved.url, path: resolved.path, text: FileSystem.decodeText(data)))
+    }
+
+    nonisolated private static func resolve(reference: CodeReference, rootURL: URL) -> LoadedCodeReferenceLocation? {
+        let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let trimmed = reference.path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/") else { return nil }
+
+        let direct = root.appendingPathComponent(trimmed).standardizedFileURL.resolvingSymlinksInPath()
+        if direct.path == root.path || direct.path.hasPrefix(root.path + "/"),
+           FileManager.default.fileExists(atPath: direct.path) {
+            return LoadedCodeReferenceLocation(url: direct, path: trimmed)
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsPackageDescendants]
+        ) else {
+            return nil
+        }
+
+        var matches: [LoadedCodeReferenceLocation] = []
+        for case let url as URL in enumerator {
+            let name = url.lastPathComponent
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else { continue }
+            if values.isDirectory == true {
+                if ignoredDirectoryNames.contains(name) || name.hasSuffix(".app") {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+            let path = relativePath(for: url, root: root)
+            guard path == trimmed || path.hasSuffix("/\(trimmed)") || name == trimmed else { continue }
+            matches.append(LoadedCodeReferenceLocation(url: url, path: path))
+        }
+
+        return matches.sorted { lhs, rhs in
+            lhs.path.count == rhs.path.count
+                ? lhs.path.localizedCaseInsensitiveCompare(rhs.path) == .orderedAscending
+                : lhs.path.count < rhs.path.count
+        }.first
+    }
+
+    nonisolated private static func relativePath(for url: URL, root: URL) -> String {
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let rootPath = root.path
+        guard path.hasPrefix(rootPath + "/") else { return url.lastPathComponent }
+        return String(path.dropFirst(rootPath.count + 1))
+    }
+
+    private struct LoadedCodeReferenceLocation: Sendable {
+        let url: URL
+        let path: String
+    }
+
+    nonisolated private static let ignoredDirectoryNames: Set<String> = [
+        ".build", ".git", ".next", ".turbo", ".venv", ".yarn", "DerivedData",
+        "Pods", "build", "coverage", "dist", "node_modules", "out", "target",
+        "vendor", "venv",
+    ]
 }

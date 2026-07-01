@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end smoke: logic self-test → build app → verify selection chat overlay layout →
+# End-to-end smoke: logic self-test → build app → verify selection chat pane layout →
 # launch on a fixture → assert UI via System Events → capture a screenshot artifact → quit.
 #
 # NOTE: the UI-assertion step needs a one-time Accessibility grant for your terminal
@@ -50,8 +50,8 @@ if command -v git >/dev/null 2>&1; then
   printf 'export const draft = true;\n' > "$FIX/src/draft.ts"
 fi
 
-echo "▸ [3/4] Selection chat overlay harness"
-"$APP/Contents/MacOS/MyIDE" --selection-chat-overlay-self-test
+echo "▸ [3/4] Selection chat pane harness"
+"$APP/Contents/MacOS/MyIDE" --selection-chat-pane-self-test
 
 echo "▸ [4/4] Launch on fixture: $FIX"
 open -n "$APP" --args "$FIX"

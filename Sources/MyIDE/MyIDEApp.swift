@@ -10,8 +10,8 @@ struct MyIDEApp: App {
 
     @MainActor
     init() {
-        if CommandLine.arguments.contains("--selection-chat-overlay-self-test") {
-            Self.runSelectionChatOverlaySelfTest()
+        if CommandLine.arguments.contains("--selection-chat-pane-self-test") {
+            Self.runSelectionChatPaneSelfTest()
             Foundation.exit(0)
         }
 
@@ -52,16 +52,7 @@ struct MyIDEApp: App {
         ) ?? URL(fileURLWithPath: cwd, isDirectory: true)
     }
 
-    private static func runSelectionChatOverlaySelfTest() {
-        let container = SelectionAskContainerView(frame: NSRect(x: 0, y: 0, width: 760, height: 520))
-        let selectionRect = NSRect(x: 280, y: 230, width: 180, height: 44)
-        container.updateAskButton(
-            selectionRect: selectionRect,
-            isVisible: true,
-            isActive: true,
-            isEnabled: true
-        )
-
+    private static func runSelectionChatPaneSelfTest() {
         let chat = SelectionChatController()
         let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let context = CodeSelectionContext(
@@ -71,10 +62,12 @@ struct MyIDEApp: App {
             endLine: 3,
             text: "export function answer(value: number) {\n  return value * 2\n}"
         )
-        chat.open(context: context, rootURL: rootURL)
+        chat.setContext(context: context, rootURL: rootURL)
         chat.draft = "What changed here?"
-        container.updateChatOverlay(chat: chat, fontSize: FontSizes.default)
-        container.layoutSubtreeIfNeeded()
+        guard chat.canSubmit else {
+            writeSelfTestError("selection chat pane did not accept selected context")
+            Foundation.exit(2)
+        }
 
         let references = CodeReferenceParser.references(in: """
         See packages/next/src/client/components/router-reducer/ppr-navigations.ts:
@@ -86,23 +79,18 @@ struct MyIDEApp: App {
             endLine: 1003
         )) else {
             writeSelfTestError("selection chat code reference parser failed")
-            Foundation.exit(2)
-        }
-
-        guard let frame = container._debugChatOverlayFrame() else {
-            writeSelfTestError("selection chat overlay did not mount")
             Foundation.exit(3)
         }
-        guard frame.width >= 440, frame.height >= 130 else {
-            writeSelfTestError("selection chat overlay too small: \(frame)")
+
+        let host = NSHostingView(rootView: SelectionChatPaneView(chat: chat, fontSize: FontSizes.default))
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
+        host.layoutSubtreeIfNeeded()
+        guard host.fittingSize.width > 0, host.fittingSize.height > 0 else {
+            writeSelfTestError("selection chat pane did not produce a visible layout")
             Foundation.exit(4)
         }
-        guard container.bounds.intersects(frame) else {
-            writeSelfTestError("selection chat overlay outside container: \(frame)")
-            Foundation.exit(5)
-        }
 
-        print("selection chat overlay ok frame=\(Int(frame.origin.x)),\(Int(frame.origin.y)) \(Int(frame.width))x\(Int(frame.height))")
+        print("selection chat pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
     }
 
     private static func writeSelfTestError(_ message: String) {

@@ -28,19 +28,23 @@ final class SelectionChatController: ObservableObject {
         phase != .closed
     }
 
+    var hasContext: Bool {
+        activeContext != nil && activeRootURL != nil
+    }
+
     var isBusy: Bool {
         if case .thinking = phase { return true }
         return false
     }
 
     var canSubmit: Bool {
-        !isBusy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        hasContext && !isBusy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var statusText: String {
         switch phase {
         case .closed:
-            return ""
+            return "Select code to ask"
         case .composing:
             return "Ask about \(contextLabel ?? "selection")"
         case .thinking:
@@ -51,21 +55,22 @@ final class SelectionChatController: ObservableObject {
     }
 
     func open(context: CodeSelectionContext?, rootURL: URL) {
+        cancelActiveTask()
+        setContext(context: context, rootURL: rootURL)
+        clearTranscript()
+    }
+
+    func setContext(context: CodeSelectionContext?, rootURL: URL) {
         guard let context else {
-            phase = .failed("Select code before asking.")
             return
         }
-        cancelActiveTask()
         activeContext = context
         activeRootURL = rootURL
         contextLabel = context.locationLabel
-        currentActivity = ""
         referenceRequest = nil
-        submittedQuestion = ""
-        answer = ""
-        toolEvents = []
-        draft = ""
-        phase = .composing
+        if phase == .closed {
+            phase = .composing
+        }
     }
 
     func close() {
@@ -80,6 +85,16 @@ final class SelectionChatController: ObservableObject {
         toolEvents = []
         draft = ""
         phase = .closed
+    }
+
+    func clearTranscript() {
+        cancelActiveTask()
+        currentActivity = ""
+        submittedQuestion = ""
+        answer = ""
+        toolEvents = []
+        draft = ""
+        phase = hasContext ? .composing : .closed
     }
 
     func cancelResponse() {

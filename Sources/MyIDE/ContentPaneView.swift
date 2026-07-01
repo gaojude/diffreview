@@ -16,8 +16,9 @@ struct ContentPaneView: View {
     @State private var state: LoadState = .empty
     @State private var displayedName: String?   // name of the file currently shown
     @State private var displayedContext: String?
+    @State private var displayedFileURL: URL?
     @State private var selectionContext: CodeSelectionContext?
-    @State private var secondaryReference: CodeReference?
+    @State private var activeReference: CodeReference?
     @StateObject private var selectionChat = SelectionChatController()
 
     enum LoadState {
@@ -31,18 +32,19 @@ struct ContentPaneView: View {
     var body: some View {
         HSplitView {
             primaryPane
-                .frame(minWidth: 420)
-            CodeReferencePaneView(
-                rootURL: rootURL,
-                reference: secondaryReference,
-                fontSize: fontSize,
-                onClose: { secondaryReference = nil }
+                .frame(minWidth: 520)
+            SelectionChatPaneView(
+                chat: selectionChat,
+                fontSize: fontSize
             )
-            .frame(minWidth: 320, idealWidth: 460)
+            .frame(minWidth: 320, idealWidth: 420)
+        }
+        .onChange(of: fileURL) { _, _ in
+            activeReference = nil
         }
         .onChange(of: selectionChat.referenceRequest?.id) { _, _ in
             guard let request = selectionChat.referenceRequest else { return }
-            secondaryReference = request.reference
+            activeReference = request.reference
         }
     }
 
@@ -55,7 +57,7 @@ struct ContentPaneView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
-        .task(id: fileURL) { await load() } // auto-cancels when the selection changes
+        .task(id: loadID) { await load() } // auto-cancels when the target changes
     }
 
     // MARK: - Header (minimal floating Liquid Glass)
@@ -83,6 +85,15 @@ struct ContentPaneView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            if activeReference != nil {
+                Button {
+                    activeReference = nil
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .buttonStyle(.borderless)
+                .help("Back to selected change")
+            }
         }
         .padding(.horizontal, 14)
         .frame(height: 46)
@@ -102,7 +113,14 @@ struct ContentPaneView: View {
 
     private func askAboutSelection(_ context: CodeSelectionContext?) {
         selectionContext = context
-        selectionChat.open(context: context, rootURL: rootURL)
+        selectionChat.setContext(context: context, rootURL: rootURL)
+    }
+
+    private var loadID: String {
+        if let activeReference {
+            return "reference:\(activeReference.id)"
+        }
+        return fileURL?.path ?? "empty"
     }
 
     // MARK: - Content
@@ -119,23 +137,24 @@ struct ContentPaneView: View {
         case .text(let s):
             CodeTextView(
                 text: s,
-                fileURL: fileURL,
+                fileURL: displayedFileURL,
                 topInset: 56,
                 fontSize: fontSize,
                 selectionChat: selectionChat,
-                onSelectionChange: { selectionContext = $0 },
+                focusedLineRange: activeReference?.lineRange,
+                onSelectionChange: selectionDidChange,
                 onAskSelection: askAboutSelection
             )
                 .accessibilityIdentifier("content-view")
         case .diff(let s):
             CodeTextView(
                 text: s,
-                fileURL: fileURL,
+                fileURL: displayedFileURL,
                 contentKind: .diff,
                 topInset: 62,
                 fontSize: fontSize,
                 selectionChat: selectionChat,
-                onSelectionChange: { selectionContext = $0 },
+                onSelectionChange: selectionDidChange,
                 onAskSelection: askAboutSelection
             )
                 .accessibilityIdentifier("content-view")
@@ -143,6 +162,11 @@ struct ContentPaneView: View {
             glassPlaceholder(m, systemImage: "doc")
                 .accessibilityIdentifier("content-message")
         }
+    }
+
+    private func selectionDidChange(_ context: CodeSelectionContext?) {
+        selectionContext = context
+        selectionChat.setContext(context: context, rootURL: rootURL)
     }
 
     private func glassPlaceholder(_ text: String, systemImage: String) -> some View {
@@ -159,6 +183,11 @@ struct ContentPaneView: View {
 
     @MainActor
     private func load() async {
+        if let activeReference {
+            await load(reference: activeReference)
+            return
+        }
+
         // No file selected (or a folder is selected) → keep showing the current file.
         guard let url = fileURL else { return }
         state = displayedName == nil ? .loading : state
@@ -168,10 +197,10 @@ struct ContentPaneView: View {
                 GitChangeSet.loadDiff(for: url, in: context)
             }.value
             if Task.isCancelled { return }
-            selectionChat.close()
             selectionContext = nil
             displayedName = url.lastPathComponent
             displayedContext = diffContextLabel(for: context)
+            displayedFileURL = url
             state = Self.map(result)
             return
         }
@@ -181,11 +210,35 @@ struct ContentPaneView: View {
         let result = await Task.detached(priority: .userInitiated) { FileSystem.loadForDisplay(url) }.value
         if Task.isCancelled { return }
         if case .isDirectory = result { return } // folder selected → keep the previous file
-        selectionChat.close()
         selectionContext = nil
         displayedName = url.lastPathComponent
         displayedContext = nil
+        displayedFileURL = url
         state = Self.map(result)
+    }
+
+    @MainActor
+    private func load(reference: CodeReference) async {
+        state = .loading
+        let rootURL = rootURL
+        let result = await Task.detached(priority: .userInitiated) {
+            CodeReferenceResolver.load(reference: reference, rootURL: rootURL)
+        }.value
+        if Task.isCancelled { return }
+
+        selectionContext = nil
+        switch result {
+        case .loaded(let loaded):
+            displayedName = loaded.url.lastPathComponent
+            displayedContext = referenceContextLabel(path: loaded.path, reference: reference)
+            displayedFileURL = loaded.url
+            state = .text(loaded.text)
+        case .failed(let message):
+            displayedName = URL(fileURLWithPath: reference.path).lastPathComponent
+            displayedContext = "Reference from chat"
+            displayedFileURL = nil
+            state = .message(message)
+        }
     }
 
     private static func map(_ load: FileSystem.FileLoad) -> LoadState {
@@ -218,6 +271,16 @@ struct ContentPaneView: View {
             return "Diff vs \(baseRef)"
         }
         return "Working tree diff"
+    }
+
+    private func referenceContextLabel(path: String, reference: CodeReference) -> String {
+        guard let lineRange = reference.lineRange else {
+            return path
+        }
+        if lineRange.lowerBound == lineRange.upperBound {
+            return "\(path) line \(lineRange.lowerBound)"
+        }
+        return "\(path) lines \(lineRange.lowerBound)-\(lineRange.upperBound)"
     }
 
     private static func byteString(_ bytes: Int) -> String {

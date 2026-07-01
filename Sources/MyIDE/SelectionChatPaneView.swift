@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct SelectionChatOverlayView: View {
+struct SelectionChatPaneView: View {
     @ObservedObject var chat: SelectionChatController
     let fontSize: CGFloat
     @FocusState private var isComposerFocused: Bool
@@ -12,23 +12,19 @@ struct SelectionChatOverlayView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
+            Divider()
             if hasTranscript {
-                Divider()
                 transcript
+            } else {
+                emptyState
             }
 
             Divider()
             composer
         }
-        .frame(width: 480)
-        .background(panelBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.24), radius: 18, x: 0, y: 8)
-        .accessibilityIdentifier("selection-chat-overlay")
+        .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityIdentifier("selection-chat-pane")
         .onAppear(perform: focusComposer)
         .onChange(of: chat.isBusy) { _, isBusy in
             if !isBusy {
@@ -37,40 +33,33 @@ struct SelectionChatOverlayView: View {
         }
     }
 
-    private var panelBackground: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .fill(Color(nsColor: .windowBackgroundColor))
-    }
-
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: statusIcon)
+            Image(systemName: "sparkles")
                 .foregroundStyle(statusColor)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
+                Text("Agent Chat")
+                    .font(.system(size: fontSize, weight: .medium))
+                    .lineLimit(1)
                 Text(chat.statusText)
                     .font(.system(size: max(fontSize - 2, 10)))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                if let contextLabel = chat.contextLabel {
-                    Text(contextLabel)
-                        .font(.system(size: max(fontSize - 3, 9)))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
             Spacer(minLength: 8)
-            Button {
-                chat.close()
-            } label: {
-                Image(systemName: "xmark")
+            if hasTranscript || !chat.draft.isEmpty {
+                Button {
+                    chat.clearTranscript()
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Clear chat")
             }
-            .buttonStyle(.borderless)
-            .help("Close")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .frame(height: 56)
     }
 
     private var transcript: some View {
@@ -111,7 +100,7 @@ struct SelectionChatOverlayView: View {
                 }
                 .padding(12)
             }
-            .frame(maxHeight: 320)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor).opacity(0.42))
             .onChange(of: chat.answer) { _, _ in
                 scrollToBottom(proxy)
@@ -125,6 +114,27 @@ struct SelectionChatOverlayView: View {
         }
     }
 
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: chat.hasContext ? "text.bubble" : "cursorarrow.rays")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text(chat.hasContext ? "Ask about the current selection" : "Select code in the editor")
+                .font(.system(size: fontSize))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if let contextLabel = chat.contextLabel {
+                Text(contextLabel)
+                    .font(.system(size: max(fontSize - 2, 10)))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("Ask about the selection", text: $chat.draft, axis: .vertical)
@@ -132,7 +142,7 @@ struct SelectionChatOverlayView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: fontSize))
                 .focused($isComposerFocused)
-                .disabled(chat.isBusy)
+                .disabled(chat.isBusy || !chat.hasContext)
                 .submitLabel(.send)
                 .onSubmit {
                     chat.submit()
@@ -179,19 +189,6 @@ struct SelectionChatOverlayView: View {
             withAnimation(.easeOut(duration: 0.16)) {
                 proxy.scrollTo(bottomID, anchor: .bottom)
             }
-        }
-    }
-
-    private var statusIcon: String {
-        switch chat.phase {
-        case .closed:
-            return "text.bubble"
-        case .composing:
-            return "text.bubble"
-        case .thinking:
-            return "sparkles"
-        case .failed:
-            return "exclamationmark.triangle"
         }
     }
 
