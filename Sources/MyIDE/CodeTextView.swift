@@ -93,7 +93,7 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onAskSelection = onAskSelection
         context.coordinator.updateAskButton()
-        container.updateChatPopover(chat: selectionChat)
+        container.updateChatOverlay(chat: selectionChat)
         context.coordinator.render(
             text,
             language: language,
@@ -114,7 +114,7 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onAskSelection = onAskSelection
         context.coordinator.updateAskButton()
-        nsView.updateChatPopover(chat: selectionChat)
+        nsView.updateChatOverlay(chat: selectionChat)
         context.coordinator.render(
             text,
             language: language,
@@ -142,6 +142,8 @@ struct CodeTextView: NSViewRepresentable {
         private var renderID = 0
         private var currentRenderKey: RenderKey?
         private weak var observedClipView: NSClipView?
+        private var lastSelectionContext: CodeSelectionContext?
+        private var lastSelectionRect: NSRect?
 
         var fileURL: URL?
         var contentKind: CodeContentKind = .source
@@ -186,7 +188,7 @@ struct CodeTextView: NSViewRepresentable {
 
         @objc func askSelection() {
             guard !isAskBusy else { return }
-            onAskSelection(currentSelectionContext())
+            onAskSelection(currentSelectionContext() ?? lastSelectionContext)
         }
 
         @objc private func scrollViewBoundsDidChange(_ notification: Notification) {
@@ -197,9 +199,13 @@ struct CodeTextView: NSViewRepresentable {
             guard let containerView else { return }
             let context = currentSelectionContext()
             let rect = currentSelectionRect()
+            if let context, let rect {
+                lastSelectionContext = context
+                lastSelectionRect = rect
+            }
             let isVisible = context != nil || isAskActive
             containerView.updateAskButton(
-                selectionRect: rect,
+                selectionRect: rect ?? (isAskActive ? lastSelectionRect : nil),
                 isVisible: isVisible,
                 isActive: isAskActive,
                 isEnabled: !isAskBusy
@@ -491,8 +497,7 @@ final class SelectionAskContainerView: NSView {
     private let scrollViewSlot = NSView()
     private let askButton = NSButton()
     private var selectionRect: NSRect?
-    private var chatPopover: NSPopover?
-    private var chatHost: NSHostingController<SelectionChatPopoverView>?
+    private var chatHost: NSHostingView<SelectionChatOverlayView>?
     private let buttonSize: CGFloat = 30
 
     override init(frame frameRect: NSRect) {
@@ -538,39 +543,37 @@ final class SelectionAskContainerView: NSView {
         needsLayout = true
     }
 
-    func updateChatPopover(chat: SelectionChatController) {
+    func updateChatOverlay(chat: SelectionChatController) {
         guard chat.isOpen else {
-            closeChatPopover()
+            closeChatOverlay()
             return
         }
 
-        guard !askButton.isHidden else { return }
-
-        let popover: NSPopover
-        if let existing = chatPopover {
-            popover = existing
+        let host: NSHostingView<SelectionChatOverlayView>
+        if let existing = chatHost {
+            host = existing
+            host.rootView = SelectionChatOverlayView(chat: chat)
         } else {
-            let created = NSPopover()
-            created.behavior = .applicationDefined
-            created.animates = true
-            chatPopover = created
-            popover = created
+            let created = NSHostingView(rootView: SelectionChatOverlayView(chat: chat))
+            created.translatesAutoresizingMaskIntoConstraints = true
+            created.setAccessibilityIdentifier("selection-chat-overlay")
+            addSubview(created, positioned: .above, relativeTo: askButton)
+            chatHost = created
+            host = created
         }
+        host.isHidden = false
+        host.invalidateIntrinsicContentSize()
+        needsLayout = true
+    }
 
-        if chatHost == nil {
-            let host = NSHostingController(rootView: SelectionChatPopoverView(chat: chat))
-            chatHost = host
-            popover.contentViewController = host
-        }
-
-        if !popover.isShown {
-            popover.show(relativeTo: askButton.bounds, of: askButton, preferredEdge: .maxX)
-        }
+    func _debugChatOverlayFrame() -> NSRect? {
+        chatHost?.frame
     }
 
     override func layout() {
         super.layout()
         positionAskButton()
+        positionChatOverlay()
     }
 
     private func configure() {
@@ -611,9 +614,38 @@ final class SelectionAskContainerView: NSView {
         askButton.frame = NSRect(x: x, y: y, width: buttonSize, height: buttonSize)
     }
 
-    private func closeChatPopover() {
-        chatPopover?.performClose(nil)
-        chatPopover = nil
+    private func closeChatOverlay() {
+        chatHost?.removeFromSuperview()
         chatHost = nil
+    }
+
+    private func positionChatOverlay() {
+        guard let host = chatHost, !host.isHidden else { return }
+        let anchorRect = selectionRect ?? askButton.frame
+        guard !anchorRect.isEmpty else { return }
+
+        let margin: CGFloat = 12
+        let fittingSize = host.fittingSize
+        let maxWidth = max(bounds.width - margin * 2, 280)
+        let maxHeight = max(bounds.height - margin * 2, 180)
+        let width = min(max(fittingSize.width, 440), min(520, maxWidth))
+        let height = min(max(fittingSize.height, 142), min(430, maxHeight))
+
+        let rightX = anchorRect.maxX + 12
+        let leftX = anchorRect.minX - width - 12
+        let x: CGFloat
+        if rightX + width <= bounds.maxX - margin {
+            x = rightX
+        } else if leftX >= margin {
+            x = leftX
+        } else {
+            x = min(max(anchorRect.minX, margin), max(bounds.maxX - width - margin, margin))
+        }
+
+        let y = min(
+            max(anchorRect.midY - height / 2, margin),
+            max(bounds.maxY - height - margin, margin)
+        )
+        host.frame = NSRect(x: x, y: y, width: width, height: height)
     }
 }

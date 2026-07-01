@@ -81,6 +81,7 @@ just the toolchain:
 
 ```sh
 ./scripts/selftest.sh    # pure-logic assertions (Git changes, sort, binary sniff, path resolution)
+./scripts/selection-chat-ui-test.sh # native overlay layout harness for selection chat
 ./scripts/e2e.sh         # self-test → build → launch on a fixture → assert window via a11y → screenshot
 ```
 

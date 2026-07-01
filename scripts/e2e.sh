@@ -1,6 +1,6 @@
 #!/bin/bash
-# End-to-end smoke: logic self-test → build app → launch on a fixture → assert UI via
-# System Events → capture a screenshot artifact → quit.
+# End-to-end smoke: logic self-test → build app → verify selection chat overlay layout →
+# launch on a fixture → assert UI via System Events → capture a screenshot artifact → quit.
 #
 # NOTE: the UI-assertion step needs a one-time Accessibility grant for your terminal
 # (System Settings → Privacy & Security → Accessibility). Without it, System Events
@@ -11,12 +11,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/_env.sh"
 
-echo "▸ [1/3] Logic self-test"
+echo "▸ [1/4] Logic self-test"
 if ! swift run -c release MyIDESelfTest; then
   echo "✗ self-test failed"; exit 1
 fi
 
-echo "▸ [2/3] Build app bundle"
+echo "▸ [2/4] Build app bundle"
 "$ROOT/scripts/build.sh"
 APP="$ROOT/build/MyIDE.app"
 
@@ -50,7 +50,10 @@ if command -v git >/dev/null 2>&1; then
   printf 'export const draft = true;\n' > "$FIX/src/draft.ts"
 fi
 
-echo "▸ [3/3] Launch on fixture: $FIX"
+echo "▸ [3/4] Selection chat overlay harness"
+"$APP/Contents/MacOS/MyIDE" --selection-chat-overlay-self-test
+
+echo "▸ [4/4] Launch on fixture: $FIX"
 open -n "$APP" --args "$FIX"
 
 APP_PID=""

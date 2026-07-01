@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct SelectionChatPopoverView: View {
+struct SelectionChatOverlayView: View {
     @ObservedObject var chat: SelectionChatController
     @FocusState private var isComposerFocused: Bool
 
@@ -19,15 +19,26 @@ struct SelectionChatPopoverView: View {
             Divider()
             composer
         }
-        .frame(width: 460)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .accessibilityIdentifier("selection-chat-popover")
+        .frame(width: 480)
+        .background(panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.24), radius: 18, x: 0, y: 8)
+        .accessibilityIdentifier("selection-chat-overlay")
         .onAppear(perform: focusComposer)
         .onChange(of: chat.isBusy) { _, isBusy in
             if !isBusy {
                 focusComposer()
             }
         }
+    }
+
+    private var panelBackground: some View {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(Color(nsColor: .windowBackgroundColor))
     }
 
     private var header: some View {
@@ -96,6 +107,7 @@ struct SelectionChatPopoverView: View {
                 .padding(12)
             }
             .frame(maxHeight: 320)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.42))
             .onChange(of: chat.answer) { _, _ in
                 scrollToBottom(proxy)
             }
@@ -143,6 +155,7 @@ struct SelectionChatPopoverView: View {
             }
         }
         .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
     }
 
     private var hasTranscript: Bool {

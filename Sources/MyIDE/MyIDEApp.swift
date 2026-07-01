@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import AppKit
 import MyIDECore
@@ -9,6 +10,11 @@ struct MyIDEApp: App {
 
     @MainActor
     init() {
+        if CommandLine.arguments.contains("--selection-chat-overlay-self-test") {
+            Self.runSelectionChatOverlaySelfTest()
+            Foundation.exit(0)
+        }
+
         let rootURL = Self.rootURL()
         let appState = AppState(rootURL: rootURL)
         _appState = StateObject(wrappedValue: appState)
@@ -44,6 +50,50 @@ struct MyIDEApp: App {
             arguments: CommandLine.arguments,
             currentDirectory: cwd
         ) ?? URL(fileURLWithPath: cwd, isDirectory: true)
+    }
+
+    private static func runSelectionChatOverlaySelfTest() {
+        let container = SelectionAskContainerView(frame: NSRect(x: 0, y: 0, width: 760, height: 520))
+        let selectionRect = NSRect(x: 280, y: 230, width: 180, height: 44)
+        container.updateAskButton(
+            selectionRect: selectionRect,
+            isVisible: true,
+            isActive: true,
+            isEnabled: true
+        )
+
+        let chat = SelectionChatController()
+        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let context = CodeSelectionContext(
+            fileURL: rootURL.appendingPathComponent("src/index.ts"),
+            contentKind: .source,
+            startLine: 1,
+            endLine: 3,
+            text: "export function answer(value: number) {\n  return value * 2\n}"
+        )
+        chat.open(context: context, rootURL: rootURL)
+        chat.draft = "What changed here?"
+        container.updateChatOverlay(chat: chat)
+        container.layoutSubtreeIfNeeded()
+
+        guard let frame = container._debugChatOverlayFrame() else {
+            writeSelfTestError("selection chat overlay did not mount")
+            Foundation.exit(2)
+        }
+        guard frame.width >= 440, frame.height >= 130 else {
+            writeSelfTestError("selection chat overlay too small: \(frame)")
+            Foundation.exit(3)
+        }
+        guard container.bounds.intersects(frame) else {
+            writeSelfTestError("selection chat overlay outside container: \(frame)")
+            Foundation.exit(4)
+        }
+
+        print("selection chat overlay ok frame=\(Int(frame.origin.x)),\(Int(frame.origin.y)) \(Int(frame.width))x\(Int(frame.height))")
+    }
+
+    private static func writeSelfTestError(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 }
 
