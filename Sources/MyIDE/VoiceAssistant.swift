@@ -68,6 +68,10 @@ final class VoiceQuestionController: NSObject, ObservableObject {
     }
 
     func startListening(context: CodeSelectionContext?) {
+        guard let context else {
+            phase = .failed("Select code before asking.")
+            return
+        }
         Task { await beginListening(context: context) }
     }
 
@@ -109,14 +113,14 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         }
     }
 
-    private func beginListening(context: CodeSelectionContext?) async {
+    private func beginListening(context: CodeSelectionContext) async {
         stopRecording(finishTask: false)
         stopSpeaking()
 
         transcript = ""
         answer = ""
         activeContext = context
-        contextLabel = context?.locationLabel
+        contextLabel = context.locationLabel
         phase = .authorizing
 
         do {
@@ -288,7 +292,7 @@ private enum VoiceAssistantError: LocalizedError {
         case .speechRecognitionUnavailable:
             return "Speech recognition is unavailable."
         case .missingAPIKey:
-            return "Set OPENAI_API_KEY to ask the assistant."
+            return "Set AI_GATEWAY_API_KEY or OPENAI_API_KEY to ask the assistant."
         case .invalidResponse:
             return "The assistant returned an unreadable response."
         case .api(let message):
@@ -299,13 +303,9 @@ private enum VoiceAssistantError: LocalizedError {
 
 private struct OpenAICodeQuestionClient {
     func ask(question: String, context: CodeSelectionContext?) async throws -> String {
-        guard let apiKey = environmentValue("OPENAI_API_KEY") else {
-            throw VoiceAssistantError.missingAPIKey
-        }
-
-        let model = environmentValue("OPENAI_MODEL") ?? "gpt-5.5"
+        let configuration = try apiConfiguration()
         let payload = try JSONSerialization.data(withJSONObject: [
-            "model": model,
+            "model": configuration.model,
             "input": [
                 [
                     "role": "developer",
@@ -319,10 +319,10 @@ private struct OpenAICodeQuestionClient {
             "max_output_tokens": 600,
         ])
 
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        var request = URLRequest(url: configuration.baseURL.appendingPathComponent("responses"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = payload
         request.timeoutInterval = 60
 
@@ -344,6 +344,35 @@ private struct OpenAICodeQuestionClient {
             throw VoiceAssistantError.invalidResponse
         }
         return text
+    }
+
+    private func apiConfiguration() throws -> APIConfiguration {
+        if let gatewayKey = environmentValue("AI_GATEWAY_API_KEY") {
+            return APIConfiguration(
+                apiKey: gatewayKey,
+                baseURL: environmentURL("AI_GATEWAY_BASE_URL")
+                    ?? environmentURL("MYIDE_AI_BASE_URL")
+                    ?? URL(string: "https://ai-gateway.vercel.sh/v1")!,
+                model: environmentValue("MYIDE_AI_MODEL")
+                    ?? environmentValue("AI_GATEWAY_MODEL")
+                    ?? environmentValue("OPENAI_MODEL")
+                    ?? "openai/gpt-5.5"
+            )
+        }
+
+        if let openAIKey = environmentValue("OPENAI_API_KEY") {
+            return APIConfiguration(
+                apiKey: openAIKey,
+                baseURL: environmentURL("OPENAI_BASE_URL")
+                    ?? environmentURL("MYIDE_AI_BASE_URL")
+                    ?? URL(string: "https://api.openai.com/v1")!,
+                model: environmentValue("MYIDE_AI_MODEL")
+                    ?? environmentValue("OPENAI_MODEL")
+                    ?? "gpt-5.5"
+            )
+        }
+
+        throw VoiceAssistantError.missingAPIKey
     }
 
     private var developerInstructions: String {
@@ -390,9 +419,19 @@ private struct OpenAICodeQuestionClient {
         return value?.isEmpty == false ? value : nil
     }
 
+    private func environmentURL(_ name: String) -> URL? {
+        environmentValue(name).flatMap(URL.init(string:))
+    }
+
     private static func clipped(_ text: String, maxCharacters: Int = 12_000) -> String {
         guard text.count > maxCharacters else { return text }
         return "\(text.prefix(maxCharacters))\n\n[Selection truncated]"
+    }
+
+    private struct APIConfiguration {
+        let apiKey: String
+        let baseURL: URL
+        let model: String
     }
 }
 

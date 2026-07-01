@@ -68,14 +68,16 @@ struct ContentPaneView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            Button {
-                toggleVoiceQuestion()
-            } label: {
-                Image(systemName: voiceAssistant.isListening ? "stop.circle.fill" : "mic.circle")
+            if selectionContext != nil || voiceAssistant.isListening {
+                Button {
+                    toggleVoiceQuestion()
+                } label: {
+                    Image(systemName: voiceAssistant.isListening ? "stop.circle.fill" : "mic.circle")
+                }
+                .buttonStyle(.borderless)
+                .disabled(voicePrimaryButtonDisabled)
+                .help(voiceAssistant.isListening ? "Ask" : "Ask about selection")
             }
-            .buttonStyle(.borderless)
-            .disabled(voicePrimaryButtonDisabled)
-            .help(voiceAssistant.isListening ? "Ask" : "Start voice question")
 
             if voiceAssistant.phase == .speaking {
                 Button {
@@ -176,7 +178,7 @@ struct ContentPaneView: View {
         case .authorizing, .thinking:
             return true
         case .idle, .listening, .speaking, .failed:
-            return false
+            return selectionContext == nil && !voiceAssistant.isListening
         }
     }
 

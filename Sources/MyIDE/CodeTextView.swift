@@ -234,15 +234,11 @@ struct CodeTextView: NSViewRepresentable {
 
             let selectedRange = textView.selectedRange()
             guard selectedRange.location != NSNotFound else { return nil }
+            guard selectedRange.length > 0 else { return nil }
 
             let maxLocation = max(nsString.length - 1, 0)
             let startLocation = min(selectedRange.location, maxLocation)
-            let endLocation: Int
-            if selectedRange.length == 0 {
-                endLocation = startLocation
-            } else {
-                endLocation = min(NSMaxRange(selectedRange) - 1, maxLocation)
-            }
+            let endLocation = min(NSMaxRange(selectedRange) - 1, maxLocation)
 
             let startLineRange = nsString.lineRange(for: NSRange(location: startLocation, length: 0))
             let endLineRange = nsString.lineRange(for: NSRange(location: endLocation, length: 0))
