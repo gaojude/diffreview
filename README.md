@@ -14,9 +14,10 @@ thin `my-ide` command — like `code .`, but native.
 - **Right diff pane** — selecting a changed file shows its Git patch against the PR merge-base
   plus local working-tree edits. Additions, deletions, hunks, and metadata are styled in a
   native `NSTextView`; oversized diffs show a placeholder instead of hanging.
-- **Voice questions on selected code** — select code, click the microphone in the floating
-  header, ask a question aloud, and get a spoken AI response. The selected source/diff lines are
-  sent as context for the question.
+- **Voice codebase agent** — select code, click the microphone that appears beside the
+  selection, ask a question aloud, and get a spoken AI response. The selection anchors a read-only local context
+  pass over the opened project, including a repo map, project metadata, the selected file, and
+  relevant files found by path/content matches.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -52,7 +53,8 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 
 Voice questions use Apple Speech for local speech-to-text, a Responses-compatible model API for
 the answer, and macOS speech synthesis for the spoken reply. Select a range in the code viewer,
-then click the microphone in the floating header.
+then click the inline microphone beside the selection. The app builds a read-only local context pack
+from the opened project before sending the request.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
@@ -66,8 +68,10 @@ my-ide .
 ```
 
 On first use, macOS asks for Microphone and Speech Recognition permission. The app sends the
-spoken question plus the selected source/diff lines to the configured model provider. A real
-selection is required before voice ask starts.
+spoken question, selected source/diff lines, repository map, selected file, project metadata, and
+relevant local text matches to the configured model provider. Generated/dependency directories
+such as `.git`, `.build`, `build`, and `node_modules` are ignored. A real selection is required
+before voice ask starts.
 
 ## Testing
 

@@ -27,6 +27,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var activeContext: CodeSelectionContext?
+    private var activeRootURL: URL?
 
     override init() {
         super.init()
@@ -67,12 +68,12 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         }
     }
 
-    func startListening(context: CodeSelectionContext?) {
+    func startListening(context: CodeSelectionContext?, rootURL: URL) {
         guard let context else {
             phase = .failed("Select code before asking.")
             return
         }
-        Task { await beginListening(context: context) }
+        Task { await beginListening(context: context, rootURL: rootURL) }
     }
 
     func finishListeningAndAsk() {
@@ -86,7 +87,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         }
 
         phase = .thinking
-        Task { await ask(question: question, context: activeContext) }
+        Task { await ask(question: question, context: activeContext, rootURL: activeRootURL) }
     }
 
     func cancel() {
@@ -95,6 +96,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         transcript = ""
         answer = ""
         activeContext = nil
+        activeRootURL = nil
         contextLabel = nil
         phase = .idle
     }
@@ -113,13 +115,14 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         }
     }
 
-    private func beginListening(context: CodeSelectionContext) async {
+    private func beginListening(context: CodeSelectionContext, rootURL: URL) async {
         stopRecording(finishTask: false)
         stopSpeaking()
 
         transcript = ""
         answer = ""
         activeContext = context
+        activeRootURL = rootURL
         contextLabel = context.locationLabel
         phase = .authorizing
 
@@ -132,9 +135,9 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         }
     }
 
-    private func ask(question: String, context: CodeSelectionContext?) async {
+    private func ask(question: String, context: CodeSelectionContext?, rootURL: URL?) async {
         do {
-            let reply = try await client.ask(question: question, context: context)
+            let reply = try await client.ask(question: question, context: context, rootURL: rootURL)
             answer = reply
             speak(reply)
         } catch {
@@ -302,8 +305,9 @@ private enum VoiceAssistantError: LocalizedError {
 }
 
 private struct OpenAICodeQuestionClient {
-    func ask(question: String, context: CodeSelectionContext?) async throws -> String {
+    func ask(question: String, context: CodeSelectionContext?, rootURL: URL?) async throws -> String {
         let configuration = try apiConfiguration()
+        let prompt = await userPrompt(question: question, context: context, rootURL: rootURL)
         let payload = try JSONSerialization.data(withJSONObject: [
             "model": configuration.model,
             "input": [
@@ -313,10 +317,10 @@ private struct OpenAICodeQuestionClient {
                 ],
                 [
                     "role": "user",
-                    "content": userPrompt(question: question, context: context),
+                    "content": prompt,
                 ],
             ],
-            "max_output_tokens": 600,
+            "max_output_tokens": 900,
         ])
 
         var request = URLRequest(url: configuration.baseURL.appendingPathComponent("responses"))
@@ -377,40 +381,34 @@ private struct OpenAICodeQuestionClient {
 
     private var developerInstructions: String {
         """
-        You are a concise senior coding assistant inside a native macOS IDE.
-        The user asks by voice about the selected code or diff lines.
-        Answer directly and practically. If the context is insufficient, say what additional context would help.
+        You are a concise senior coding agent inside a native macOS IDE.
+        The user asks by voice after selecting code. Treat the selection as the anchor, but reason over the provided codebase context.
+        The context was gathered locally and read-only from the opened project root. Do not claim access to files that are not included in the context.
+        Answer directly and practically. If more context is needed, name the missing file or symbol.
         Keep answers short enough to be spoken aloud.
         """
     }
 
-    private func userPrompt(question: String, context: CodeSelectionContext?) -> String {
-        guard let context else {
+    private func userPrompt(question: String, context: CodeSelectionContext?, rootURL: URL?) async -> String {
+        guard let context, let rootURL else {
             return """
             Question:
             \(question)
 
-            No code selection was available.
+            No codebase context was available.
             """
         }
+
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            CodebaseContextBuilder.build(rootURL: rootURL, selection: context, question: question)
+        }.value
 
         return """
         Question:
         \(question)
 
-        Context kind:
-        \(context.contentKind == .diff ? "diff" : "source")
-
-        File:
-        \(context.fileURL?.path ?? "Unknown")
-
-        Selected lines:
-        \(context.startLine)-\(context.endLine)
-
-        Selected text:
-        ```
-        \(Self.clipped(context.text))
-        ```
+        Local read-only codebase context:
+        \(snapshot.promptText)
         """
     }
 

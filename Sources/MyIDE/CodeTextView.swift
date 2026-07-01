@@ -3,12 +3,12 @@ import AppKit
 import MyIDECore
 import Highlighter
 
-enum CodeContentKind: Equatable {
+enum CodeContentKind: Equatable, Sendable {
     case source
     case diff
 }
 
-struct CodeSelectionContext: Equatable {
+struct CodeSelectionContext: Equatable, Sendable {
     let fileURL: URL?
     let contentKind: CodeContentKind
     let startLine: Int
@@ -38,11 +38,15 @@ struct CodeTextView: NSViewRepresentable {
     var topInset: CGFloat = 8
     /// Monospaced point size, driven by the View-menu font shortcuts.
     var fontSize: CGFloat = FontSizes.default
+    var isVoiceListening = false
+    var isVoiceBusy = false
     var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
+    var onAskSelection: (CodeSelectionContext?) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> SelectionAskContainerView {
+        let container = SelectionAskContainerView()
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -79,10 +83,17 @@ struct CodeTextView: NSViewRepresentable {
         textView.delegate = context.coordinator
 
         scrollView.documentView = textView
+        container.install(scrollView: scrollView, target: context.coordinator, action: #selector(Coordinator.askSelection))
         context.coordinator.textView = textView
+        context.coordinator.containerView = container
+        context.coordinator.observeScrollView(scrollView)
         context.coordinator.fileURL = fileURL
         context.coordinator.contentKind = contentKind
+        context.coordinator.isVoiceListening = isVoiceListening
+        context.coordinator.isVoiceBusy = isVoiceBusy
         context.coordinator.onSelectionChange = onSelectionChange
+        context.coordinator.onAskSelection = onAskSelection
+        context.coordinator.updateAskButton()
         context.coordinator.render(
             text,
             language: language,
@@ -91,14 +102,18 @@ struct CodeTextView: NSViewRepresentable {
             appearance: textView.effectiveAppearance,
             resetScroll: true
         )
-        return scrollView
+        return container
     }
 
-    func updateNSView(_ nsView: NSScrollView, context: Context) {
+    func updateNSView(_ nsView: SelectionAskContainerView, context: Context) {
         guard let textView = context.coordinator.textView else { return }
         context.coordinator.fileURL = fileURL
         context.coordinator.contentKind = contentKind
+        context.coordinator.isVoiceListening = isVoiceListening
+        context.coordinator.isVoiceBusy = isVoiceBusy
         context.coordinator.onSelectionChange = onSelectionChange
+        context.coordinator.onAskSelection = onAskSelection
+        context.coordinator.updateAskButton()
         context.coordinator.render(
             text,
             language: language,
@@ -120,18 +135,74 @@ struct CodeTextView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         weak var textView: NSTextView?
+        weak var containerView: SelectionAskContainerView?
         private let renderQueue = DispatchQueue(label: "com.judegao.myide.syntax-highlighting", qos: .userInitiated)
         private var highlighter: Highlighter?
         private var renderID = 0
         private var currentRenderKey: RenderKey?
+        private weak var observedClipView: NSClipView?
 
         var fileURL: URL?
         var contentKind: CodeContentKind = .source
+        var isVoiceListening = false
+        var isVoiceBusy = false
         var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
+        var onAskSelection: (CodeSelectionContext?) -> Void = { _ in }
         var currentText: String?
+
+        deinit {
+            if let observedClipView {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSView.boundsDidChangeNotification,
+                    object: observedClipView
+                )
+            }
+        }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             emitSelection()
+        }
+
+        func observeScrollView(_ scrollView: NSScrollView) {
+            guard observedClipView !== scrollView.contentView else { return }
+            if let observedClipView {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSView.boundsDidChangeNotification,
+                    object: observedClipView
+                )
+            }
+            observedClipView = scrollView.contentView
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(scrollViewBoundsDidChange),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+        }
+
+        @objc func askSelection() {
+            guard !isVoiceBusy || isVoiceListening else { return }
+            onAskSelection(currentSelectionContext())
+        }
+
+        @objc private func scrollViewBoundsDidChange(_ notification: Notification) {
+            updateAskButton()
+        }
+
+        func updateAskButton() {
+            guard let containerView else { return }
+            let context = currentSelectionContext()
+            let rect = currentSelectionRect()
+            let isVisible = context != nil || isVoiceListening
+            containerView.updateAskButton(
+                selectionRect: rect,
+                isVisible: isVisible,
+                isListening: isVoiceListening,
+                isEnabled: !isVoiceBusy || isVoiceListening
+            )
         }
 
         func render(
@@ -213,15 +284,44 @@ struct CodeTextView: NSViewRepresentable {
         }
 
         private func emitSelection() {
-            guard let textView else {
-                onSelectionChange(nil)
-                return
-            }
-            onSelectionChange(Self.selectionContext(
+            onSelectionChange(currentSelectionContext())
+            updateAskButton()
+        }
+
+        private func currentSelectionContext() -> CodeSelectionContext? {
+            guard let textView else { return nil }
+            return Self.selectionContext(
                 in: textView,
                 fileURL: fileURL,
                 contentKind: contentKind
-            ))
+            )
+        }
+
+        private func currentSelectionRect() -> NSRect? {
+            guard
+                let textView,
+                let containerView,
+                let layoutManager = textView.layoutManager,
+                let textContainer = textView.textContainer
+            else {
+                return nil
+            }
+
+            let selectedRange = textView.selectedRange()
+            guard selectedRange.location != NSNotFound, selectedRange.length > 0 else { return nil }
+
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: selectedRange,
+                actualCharacterRange: nil
+            )
+            guard glyphRange.length > 0 else { return nil }
+
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textView.textContainerOrigin.x
+            rect.origin.y += textView.textContainerOrigin.y
+            rect = textView.convert(rect, to: containerView)
+            guard rect.intersects(containerView.bounds.insetBy(dx: -60, dy: -60)) else { return nil }
+            return rect
         }
 
         private static func selectionContext(
@@ -383,5 +483,98 @@ struct CodeTextView: NSViewRepresentable {
         let contentKind: CodeContentKind
         let fontSize: CGFloat
         let themeName: String
+    }
+}
+
+final class SelectionAskContainerView: NSView {
+    private let scrollViewSlot = NSView()
+    private let askButton = NSButton()
+    private var selectionRect: NSRect?
+    private let buttonSize: CGFloat = 30
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    func install(scrollView: NSScrollView, target: AnyObject, action: Selector) {
+        scrollViewSlot.subviews.forEach { $0.removeFromSuperview() }
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollViewSlot.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: scrollViewSlot.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: scrollViewSlot.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: scrollViewSlot.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: scrollViewSlot.bottomAnchor),
+        ])
+
+        askButton.target = target
+        askButton.action = action
+    }
+
+    func updateAskButton(
+        selectionRect: NSRect?,
+        isVisible: Bool,
+        isListening: Bool,
+        isEnabled: Bool
+    ) {
+        self.selectionRect = selectionRect
+        askButton.isHidden = !isVisible || selectionRect == nil
+        askButton.isEnabled = isEnabled
+        askButton.image = NSImage(
+            systemSymbolName: isListening ? "stop.fill" : "mic.fill",
+            accessibilityDescription: isListening ? "Ask" : "Ask about selection"
+        )
+        askButton.contentTintColor = isListening ? .systemRed : .controlAccentColor
+        askButton.toolTip = isListening ? "Ask" : "Ask about selection"
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        positionAskButton()
+    }
+
+    private func configure() {
+        wantsLayer = true
+
+        scrollViewSlot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(scrollViewSlot)
+        NSLayoutConstraint.activate([
+            scrollViewSlot.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollViewSlot.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollViewSlot.topAnchor.constraint(equalTo: topAnchor),
+            scrollViewSlot.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+
+        askButton.isHidden = true
+        askButton.isBordered = false
+        askButton.bezelStyle = .circular
+        askButton.imagePosition = .imageOnly
+        askButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        askButton.wantsLayer = true
+        askButton.layer?.cornerRadius = buttonSize / 2
+        askButton.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.92).cgColor
+        askButton.layer?.shadowColor = NSColor.black.cgColor
+        askButton.layer?.shadowOpacity = 0.18
+        askButton.layer?.shadowRadius = 8
+        askButton.layer?.shadowOffset = NSSize(width: 0, height: -1)
+        addSubview(askButton)
+    }
+
+    private func positionAskButton() {
+        guard let selectionRect, !askButton.isHidden else { return }
+        let margin: CGFloat = 10
+        let x = min(max(selectionRect.maxX + 8, margin), max(bounds.maxX - buttonSize - margin, margin))
+        let y = min(
+            max(selectionRect.midY - buttonSize / 2, margin),
+            max(bounds.maxY - buttonSize - margin, margin)
+        )
+        askButton.frame = NSRect(x: x, y: y, width: buttonSize, height: buttonSize)
     }
 }

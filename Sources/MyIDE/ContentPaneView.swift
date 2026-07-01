@@ -8,6 +8,7 @@ import MyIDECore
 /// It shows the last *file* that was opened: selecting a folder in the sidebar does not change
 /// what's displayed. A minimal floating Liquid Glass header shows the current file's name.
 struct ContentPaneView: View {
+    let rootURL: URL
     let fileURL: URL?
     let changeTreeState: AppState.ChangeTreeState
     var fontSize: CGFloat = FontSizes.default
@@ -67,16 +68,6 @@ struct ContentPaneView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            }
-            if selectionContext != nil || voiceAssistant.isListening {
-                Button {
-                    toggleVoiceQuestion()
-                } label: {
-                    Image(systemName: voiceAssistant.isListening ? "stop.circle.fill" : "mic.circle")
-                }
-                .buttonStyle(.borderless)
-                .disabled(voicePrimaryButtonDisabled)
-                .help(voiceAssistant.isListening ? "Ask" : "Ask about selection")
             }
 
             if voiceAssistant.phase == .speaking {
@@ -173,20 +164,12 @@ struct ContentPaneView: View {
         }
     }
 
-    private var voicePrimaryButtonDisabled: Bool {
-        switch voiceAssistant.phase {
-        case .authorizing, .thinking:
-            return true
-        case .idle, .listening, .speaking, .failed:
-            return selectionContext == nil && !voiceAssistant.isListening
-        }
-    }
-
-    private func toggleVoiceQuestion() {
+    private func askAboutSelection(_ context: CodeSelectionContext?) {
         if voiceAssistant.isListening {
             voiceAssistant.finishListeningAndAsk()
         } else {
-            voiceAssistant.startListening(context: selectionContext)
+            selectionContext = context
+            voiceAssistant.startListening(context: context, rootURL: rootURL)
         }
     }
 
@@ -207,7 +190,10 @@ struct ContentPaneView: View {
                 fileURL: fileURL,
                 topInset: 56,
                 fontSize: fontSize,
-                onSelectionChange: { selectionContext = $0 }
+                isVoiceListening: voiceAssistant.isListening,
+                isVoiceBusy: voiceAssistant.isBusy,
+                onSelectionChange: { selectionContext = $0 },
+                onAskSelection: askAboutSelection
             )
                 .accessibilityIdentifier("content-view")
         case .diff(let s):
@@ -217,7 +203,10 @@ struct ContentPaneView: View {
                 contentKind: .diff,
                 topInset: 62,
                 fontSize: fontSize,
-                onSelectionChange: { selectionContext = $0 }
+                isVoiceListening: voiceAssistant.isListening,
+                isVoiceBusy: voiceAssistant.isBusy,
+                onSelectionChange: { selectionContext = $0 },
+                onAskSelection: askAboutSelection
             )
                 .accessibilityIdentifier("content-view")
         case .message(let m):

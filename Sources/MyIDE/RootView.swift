@@ -16,6 +16,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 260, max: 460)
         } detail: {
             ContentPaneView(
+                rootURL: appState.rootURL,
                 fileURL: appState.selectedFileURL,
                 changeTreeState: appState.changeTreeState,
                 fontSize: appState.fontSize
