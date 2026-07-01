@@ -21,7 +21,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
 
     private let audioEngine = AVAudioEngine()
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private let synthesizer = AVSpeechSynthesizer()
+    private let speechPlayer = SpeechPlaybackController()
     private let client = OpenAICodeQuestionClient()
 
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
@@ -31,7 +31,9 @@ final class VoiceQuestionController: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        synthesizer.delegate = self
+        speechPlayer.onFinish = { [weak self] in
+            self?.finishSpeakingIfNeeded()
+        }
     }
 
     var isListening: Bool {
@@ -107,9 +109,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
     }
 
     func stopSpeaking() {
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
-        }
+        speechPlayer.stop()
         if phase == .speaking {
             phase = .idle
         }
@@ -250,28 +250,16 @@ final class VoiceQuestionController: NSObject, ObservableObject {
             phase = .idle
             return
         }
-        stopSpeaking()
         phase = .speaking
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        synthesizer.speak(utterance)
-    }
-}
-
-extension VoiceQuestionController: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        finishSpeakingIfNeeded()
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        finishSpeakingIfNeeded()
-    }
-
-    private nonisolated func finishSpeakingIfNeeded() {
-        Task { @MainActor in
-            guard self.phase == .speaking else { return }
-            self.phase = .idle
+        Task { [weak self] in
+            guard let self else { return }
+            await self.speechPlayer.speak(text)
         }
+    }
+
+    private func finishSpeakingIfNeeded() {
+        guard phase == .speaking else { return }
+        phase = .idle
     }
 }
 
@@ -478,5 +466,211 @@ private struct OpenAIResponseEnvelope: Decodable {
         let type: String
         let text: String?
         let refusal: String?
+    }
+}
+
+@MainActor
+private final class SpeechPlaybackController: NSObject {
+    var onFinish: (() -> Void)?
+
+    private let hostedSpeechClient = HostedSpeechClient()
+    private let fallbackSynthesizer = AVSpeechSynthesizer()
+    private var audioPlayer: AVAudioPlayer?
+    private var playbackID = 0
+
+    override init() {
+        super.init()
+        fallbackSynthesizer.delegate = self
+    }
+
+    func speak(_ text: String) async {
+        stop()
+        playbackID += 1
+        let playbackID = playbackID
+
+        do {
+            let audioData = try await hostedSpeechClient.speechAudio(for: text)
+            guard self.playbackID == playbackID else { return }
+            try play(audioData)
+        } catch {
+            guard self.playbackID == playbackID else { return }
+            speakWithSystemFallback(text)
+        }
+    }
+
+    func stop() {
+        playbackID += 1
+        if audioPlayer?.isPlaying == true {
+            audioPlayer?.stop()
+        }
+        audioPlayer = nil
+        if fallbackSynthesizer.isSpeaking {
+            fallbackSynthesizer.stopSpeaking(at: .immediate)
+        }
+    }
+
+    private func play(_ data: Data) throws {
+        let player = try AVAudioPlayer(data: data)
+        player.delegate = self
+        player.prepareToPlay()
+        audioPlayer = player
+        player.play()
+    }
+
+    private func speakWithSystemFallback(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        fallbackSynthesizer.speak(utterance)
+    }
+}
+
+extension SpeechPlaybackController: AVAudioPlayerDelegate {
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.audioPlayer = nil
+            self.onFinish?()
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in
+            self.audioPlayer = nil
+            self.onFinish?()
+        }
+    }
+}
+
+extension SpeechPlaybackController: AVSpeechSynthesizerDelegate {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.onFinish?()
+        }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in
+            self.onFinish?()
+        }
+    }
+}
+
+private struct HostedSpeechClient {
+    func speechAudio(for text: String) async throws -> Data {
+        let configuration = try apiConfiguration()
+        var request = URLRequest(url: configuration.endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        configuration.headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+        request.httpBody = try JSONSerialization.data(withJSONObject: configuration.body(text))
+        request.timeoutInterval = 60
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw VoiceAssistantError.invalidResponse
+        }
+        guard 200..<300 ~= httpResponse.statusCode else {
+            throw VoiceAssistantError.api("Speech request failed with HTTP \(httpResponse.statusCode).")
+        }
+
+        switch configuration.provider {
+        case .gateway:
+            let envelope = try JSONDecoder().decode(GatewaySpeechEnvelope.self, from: data)
+            guard let audioData = Data(base64Encoded: envelope.audio) else {
+                throw VoiceAssistantError.invalidResponse
+            }
+            return audioData
+        case .openAI:
+            return data
+        }
+    }
+
+    private func apiConfiguration() throws -> APIConfiguration {
+        let voice = environmentValue("MYIDE_TTS_VOICE")
+            ?? environmentValue("AI_GATEWAY_TTS_VOICE")
+            ?? environmentValue("OPENAI_TTS_VOICE")
+            ?? "marin"
+        let instructions = environmentValue("MYIDE_TTS_INSTRUCTIONS")
+            ?? "Speak naturally and calmly, like a sharp senior engineer explaining code in a short voice note. Avoid announcer energy."
+        let speed = Double(environmentValue("MYIDE_TTS_SPEED") ?? "") ?? 1.04
+
+        if let gatewayKey = environmentValue("AI_GATEWAY_API_KEY") {
+            return APIConfiguration(
+                provider: .gateway,
+                apiKey: gatewayKey,
+                endpoint: environmentURL("AI_GATEWAY_TTS_URL")
+                    ?? URL(string: "https://ai-gateway.vercel.sh/v4/ai/speech-model")!,
+                headers: [
+                    "ai-model-id": environmentValue("MYIDE_TTS_MODEL")
+                        ?? environmentValue("AI_GATEWAY_TTS_MODEL")
+                        ?? "openai/gpt-4o-mini-tts",
+                ],
+                body: { text in
+                    [
+                        "text": Self.clipped(text),
+                        "voice": voice,
+                        "outputFormat": "mp3",
+                        "instructions": instructions,
+                        "speed": speed,
+                    ]
+                }
+            )
+        }
+
+        if let openAIKey = environmentValue("OPENAI_API_KEY") {
+            let baseURL = environmentURL("OPENAI_BASE_URL")
+                ?? URL(string: "https://api.openai.com/v1")!
+            return APIConfiguration(
+                provider: .openAI,
+                apiKey: openAIKey,
+                endpoint: baseURL.appendingPathComponent("audio/speech"),
+                headers: [:],
+                body: { text in
+                    [
+                        "model": environmentValue("MYIDE_TTS_MODEL")
+                            ?? environmentValue("OPENAI_TTS_MODEL")
+                            ?? "gpt-4o-mini-tts",
+                        "input": Self.clipped(text),
+                        "voice": voice,
+                        "response_format": "mp3",
+                        "instructions": instructions,
+                        "speed": speed,
+                    ]
+                }
+            )
+        }
+
+        throw VoiceAssistantError.missingAPIKey
+    }
+
+    private func environmentValue(_ name: String) -> String? {
+        let value = ProcessInfo.processInfo.environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value : nil
+    }
+
+    private func environmentURL(_ name: String) -> URL? {
+        environmentValue(name).flatMap(URL.init(string:))
+    }
+
+    private static func clipped(_ text: String, maxCharacters: Int = 3_800) -> String {
+        guard text.count > maxCharacters else { return text }
+        return "\(text.prefix(maxCharacters))"
+    }
+
+    private enum Provider {
+        case gateway
+        case openAI
+    }
+
+    private struct APIConfiguration {
+        let provider: Provider
+        let apiKey: String
+        let endpoint: URL
+        let headers: [String: String]
+        let body: (String) -> [String: Any]
+    }
+
+    private struct GatewaySpeechEnvelope: Decodable {
+        let audio: String
     }
 }

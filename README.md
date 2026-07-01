@@ -52,17 +52,22 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 ## Voice questions
 
 Voice questions use Apple Speech for local speech-to-text, a Responses-compatible model API for
-the answer, and macOS speech synthesis for the spoken reply. Select a range in the code viewer,
-then click the inline microphone beside the selection. The app builds a read-only local context pack
-from the opened project before sending the request.
+the answer, hosted text-to-speech for the spoken reply, and macOS speech synthesis only as a
+fallback. Select a range in the code viewer, then click the inline microphone beside the
+selection. The app builds a read-only local context pack from the opened project before sending
+the request.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
 export AI_GATEWAY_MODEL=openai/gpt-5.5 # optional; this is the Gateway default
+export AI_GATEWAY_TTS_MODEL=openai/gpt-4o-mini-tts # optional
+export MYIDE_TTS_VOICE=marin           # optional
+export MYIDE_TTS_SPEED=1.04            # optional
 
 # Direct OpenAI also works:
 # export OPENAI_API_KEY=sk-...
 # export OPENAI_MODEL=gpt-5.5
+# export OPENAI_TTS_MODEL=gpt-4o-mini-tts
 
 my-ide .
 ```
