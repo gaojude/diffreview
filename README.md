@@ -14,10 +14,10 @@ thin `my-ide` command — like `code .`, but native.
 - **Right diff pane** — selecting a changed file shows its Git patch against the PR merge-base
   plus local working-tree edits. Additions, deletions, hunks, and metadata are styled in a
   native `NSTextView`; oversized diffs show a placeholder instead of hanging.
-- **Voice codebase agent** — select code, click the microphone that appears beside the
-  selection, ask a question aloud, and get a streamed AI response. The selection anchors a
-  read-only local agent loop: the model must inspect the Git diff first, then can call local
-  tools for full-codebase file listing, file reads, and text search as needed.
+- **Selection chat agent** — select code, click the chat bubble beside the selection, type a
+  temporary question, and get a streamed AI response. The selection anchors a read-only local
+  agent loop: the model must inspect the Git diff first, then can call local tools for
+  full-codebase file listing, file reads, and text search as needed.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -49,35 +49,30 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 
 `my-ide` with no argument opens the current directory; a non-existent path prints an error.
 
-## Voice questions
+## Selection chat
 
-Voice questions use Apple Speech for local speech-to-text, a streaming Chat Completions agent
-for the answer, hosted text-to-speech for the final spoken summary, and macOS speech synthesis
-only as a fallback. Select a range in the code viewer, then click the inline microphone beside
-the selection. Tool progress is shown in the panel instead of being spoken aloud.
+Selection chat uses a streaming Chat Completions agent. Select a range in the code viewer, then
+click the inline chat bubble beside the selection. A temporary popover opens at the selection:
+type a question, send it, and watch the answer stream while read-only tool calls render in the
+popover.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
 export AI_GATEWAY_MODEL=openai/gpt-5.5 # optional; this is the Gateway default
-export AI_GATEWAY_TTS_MODEL=openai/gpt-4o-mini-tts # optional
-export MYIDE_TTS_VOICE=marin           # optional
-export MYIDE_TTS_SPEED=1.04            # optional
 
 # Direct OpenAI also works:
 # export OPENAI_API_KEY=sk-...
 # export OPENAI_MODEL=gpt-5.5
-# export OPENAI_TTS_MODEL=gpt-4o-mini-tts
 
 my-ide .
 ```
 
-On first use, macOS asks for Microphone and Speech Recognition permission. The first request
-sends only the spoken question, the selected lines, and the changed-file summary. After that, the
-model can call read-only local tools: `get_git_diff`, `list_files`, `read_file`, and
-`search_text`. `get_git_diff` is prioritized first for branch-review semantics, while
-`list_files`, `read_file`, and `search_text` can inspect the rest of the opened codebase.
-Generated/dependency directories such as `.git`, `.build`, `build`, and
-`node_modules` are ignored. A real selection is required before voice ask starts.
+The first request sends only the typed question, the selected lines, and the changed-file
+summary. After that, the model can call read-only local tools: `get_git_diff`, `list_files`,
+`read_file`, and `search_text`. `get_git_diff` is prioritized first for branch-review
+semantics, while `list_files`, `read_file`, and `search_text` can inspect the rest of the opened
+codebase. Generated/dependency directories such as `.git`, `.build`, `build`, and
+`node_modules` are ignored. A real selection is required before the chat bubble appears.
 
 ## Testing
 

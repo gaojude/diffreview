@@ -17,7 +17,7 @@ struct ContentPaneView: View {
     @State private var displayedName: String?   // name of the file currently shown
     @State private var displayedContext: String?
     @State private var selectionContext: CodeSelectionContext?
-    @StateObject private var voiceAssistant = VoiceQuestionController()
+    @StateObject private var selectionChat = SelectionChatController()
 
     enum LoadState {
         case empty
@@ -30,12 +30,7 @@ struct ContentPaneView: View {
     var body: some View {
         ZStack(alignment: .top) {
             contentLayer
-            VStack(spacing: 8) {
-                floatingHeader
-                if voiceAssistant.showsPanel {
-                    voicePanel
-                }
-            }
+            floatingHeader
             .padding(.horizontal, 10)
             .padding(.top, 8)
         }
@@ -69,71 +64,10 @@ struct ContentPaneView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-
-            if voiceAssistant.phase == .speaking {
-                Button {
-                    voiceAssistant.stopSpeaking()
-                } label: {
-                    Image(systemName: "speaker.slash")
-                }
-                .buttonStyle(.borderless)
-                .help("Stop speaking")
-            } else if !voiceAssistant.answer.isEmpty {
-                Button {
-                    voiceAssistant.replayAnswer()
-                } label: {
-                    Image(systemName: "speaker.wave.2")
-                }
-                .buttonStyle(.borderless)
-                .help("Replay answer")
-            }
-
-            if voiceAssistant.showsPanel {
-                Button {
-                    voiceAssistant.cancel()
-                } label: {
-                    Image(systemName: "xmark.circle")
-                }
-                .buttonStyle(.borderless)
-                .help("Close voice answer")
-            }
         }
         .padding(.horizontal, 14)
         .frame(height: 46)
         .glassEffect(.regular, in: .rect(cornerRadius: 23))
-    }
-
-    private var voicePanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: voiceStatusIcon)
-                    .foregroundStyle(.secondary)
-                Text(voiceAssistant.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer(minLength: 8)
-                if let contextLabel = voiceAssistant.contextLabel {
-                    Text(contextLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-
-            if !voiceAssistant.answer.isEmpty {
-                Text(voiceAssistant.answer)
-                    .font(.callout)
-                    .foregroundStyle(.primary)
-                    .lineLimit(6)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
     private var headerIcon: String {
@@ -147,30 +81,9 @@ struct ContentPaneView: View {
         }
     }
 
-    private var voiceStatusIcon: String {
-        switch voiceAssistant.phase {
-        case .authorizing:
-            return "lock.shield"
-        case .listening:
-            return "waveform"
-        case .thinking:
-            return "sparkles"
-        case .speaking:
-            return "speaker.wave.2"
-        case .failed:
-            return "exclamationmark.triangle"
-        case .idle:
-            return "checkmark.circle"
-        }
-    }
-
     private func askAboutSelection(_ context: CodeSelectionContext?) {
-        if voiceAssistant.isListening {
-            voiceAssistant.finishListeningAndAsk()
-        } else {
-            selectionContext = context
-            voiceAssistant.startListening(context: context, rootURL: rootURL)
-        }
+        selectionContext = context
+        selectionChat.open(context: context, rootURL: rootURL)
     }
 
     // MARK: - Content
@@ -190,8 +103,7 @@ struct ContentPaneView: View {
                 fileURL: fileURL,
                 topInset: 56,
                 fontSize: fontSize,
-                isVoiceListening: voiceAssistant.isListening,
-                isVoiceBusy: voiceAssistant.isBusy,
+                selectionChat: selectionChat,
                 onSelectionChange: { selectionContext = $0 },
                 onAskSelection: askAboutSelection
             )
@@ -203,8 +115,7 @@ struct ContentPaneView: View {
                 contentKind: .diff,
                 topInset: 62,
                 fontSize: fontSize,
-                isVoiceListening: voiceAssistant.isListening,
-                isVoiceBusy: voiceAssistant.isBusy,
+                selectionChat: selectionChat,
                 onSelectionChange: { selectionContext = $0 },
                 onAskSelection: askAboutSelection
             )
@@ -238,6 +149,7 @@ struct ContentPaneView: View {
                 GitChangeSet.loadDiff(for: url, in: context)
             }.value
             if Task.isCancelled { return }
+            selectionChat.close()
             selectionContext = nil
             displayedName = url.lastPathComponent
             displayedContext = diffContextLabel(for: context)
@@ -250,6 +162,7 @@ struct ContentPaneView: View {
         let result = await Task.detached(priority: .userInitiated) { FileSystem.loadForDisplay(url) }.value
         if Task.isCancelled { return }
         if case .isDirectory = result { return } // folder selected → keep the previous file
+        selectionChat.close()
         selectionContext = nil
         displayedName = url.lastPathComponent
         displayedContext = nil

@@ -38,8 +38,7 @@ struct CodeTextView: NSViewRepresentable {
     var topInset: CGFloat = 8
     /// Monospaced point size, driven by the View-menu font shortcuts.
     var fontSize: CGFloat = FontSizes.default
-    var isVoiceListening = false
-    var isVoiceBusy = false
+    @ObservedObject var selectionChat: SelectionChatController
     var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
     var onAskSelection: (CodeSelectionContext?) -> Void = { _ in }
 
@@ -89,11 +88,12 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.observeScrollView(scrollView)
         context.coordinator.fileURL = fileURL
         context.coordinator.contentKind = contentKind
-        context.coordinator.isVoiceListening = isVoiceListening
-        context.coordinator.isVoiceBusy = isVoiceBusy
+        context.coordinator.isAskActive = selectionChat.isOpen
+        context.coordinator.isAskBusy = selectionChat.isBusy
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onAskSelection = onAskSelection
         context.coordinator.updateAskButton()
+        container.updateChatPopover(chat: selectionChat)
         context.coordinator.render(
             text,
             language: language,
@@ -109,11 +109,12 @@ struct CodeTextView: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         context.coordinator.fileURL = fileURL
         context.coordinator.contentKind = contentKind
-        context.coordinator.isVoiceListening = isVoiceListening
-        context.coordinator.isVoiceBusy = isVoiceBusy
+        context.coordinator.isAskActive = selectionChat.isOpen
+        context.coordinator.isAskBusy = selectionChat.isBusy
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onAskSelection = onAskSelection
         context.coordinator.updateAskButton()
+        nsView.updateChatPopover(chat: selectionChat)
         context.coordinator.render(
             text,
             language: language,
@@ -144,8 +145,8 @@ struct CodeTextView: NSViewRepresentable {
 
         var fileURL: URL?
         var contentKind: CodeContentKind = .source
-        var isVoiceListening = false
-        var isVoiceBusy = false
+        var isAskActive = false
+        var isAskBusy = false
         var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
         var onAskSelection: (CodeSelectionContext?) -> Void = { _ in }
         var currentText: String?
@@ -184,7 +185,7 @@ struct CodeTextView: NSViewRepresentable {
         }
 
         @objc func askSelection() {
-            guard !isVoiceBusy || isVoiceListening else { return }
+            guard !isAskBusy else { return }
             onAskSelection(currentSelectionContext())
         }
 
@@ -196,12 +197,12 @@ struct CodeTextView: NSViewRepresentable {
             guard let containerView else { return }
             let context = currentSelectionContext()
             let rect = currentSelectionRect()
-            let isVisible = context != nil || isVoiceListening
+            let isVisible = context != nil || isAskActive
             containerView.updateAskButton(
                 selectionRect: rect,
                 isVisible: isVisible,
-                isListening: isVoiceListening,
-                isEnabled: !isVoiceBusy || isVoiceListening
+                isActive: isAskActive,
+                isEnabled: !isAskBusy
             )
         }
 
@@ -490,6 +491,8 @@ final class SelectionAskContainerView: NSView {
     private let scrollViewSlot = NSView()
     private let askButton = NSButton()
     private var selectionRect: NSRect?
+    private var chatPopover: NSPopover?
+    private var chatHost: NSHostingController<SelectionChatPopoverView>?
     private let buttonSize: CGFloat = 30
 
     override init(frame frameRect: NSRect) {
@@ -520,19 +523,49 @@ final class SelectionAskContainerView: NSView {
     func updateAskButton(
         selectionRect: NSRect?,
         isVisible: Bool,
-        isListening: Bool,
+        isActive: Bool,
         isEnabled: Bool
     ) {
         self.selectionRect = selectionRect
         askButton.isHidden = !isVisible || selectionRect == nil
         askButton.isEnabled = isEnabled
         askButton.image = NSImage(
-            systemSymbolName: isListening ? "stop.fill" : "mic.fill",
-            accessibilityDescription: isListening ? "Ask" : "Ask about selection"
+            systemSymbolName: isActive ? "text.bubble.fill" : "text.bubble",
+            accessibilityDescription: "Ask about selection"
         )
-        askButton.contentTintColor = isListening ? .systemRed : .controlAccentColor
-        askButton.toolTip = isListening ? "Ask" : "Ask about selection"
+        askButton.contentTintColor = isActive ? .controlAccentColor : .secondaryLabelColor
+        askButton.toolTip = "Ask about selection"
         needsLayout = true
+    }
+
+    func updateChatPopover(chat: SelectionChatController) {
+        guard chat.isOpen else {
+            closeChatPopover()
+            return
+        }
+
+        guard !askButton.isHidden else { return }
+
+        let popover: NSPopover
+        if let existing = chatPopover {
+            popover = existing
+        } else {
+            let created = NSPopover()
+            created.behavior = .applicationDefined
+            created.animates = true
+            chatPopover = created
+            popover = created
+        }
+
+        if chatHost == nil {
+            let host = NSHostingController(rootView: SelectionChatPopoverView(chat: chat))
+            chatHost = host
+            popover.contentViewController = host
+        }
+
+        if !popover.isShown {
+            popover.show(relativeTo: askButton.bounds, of: askButton, preferredEdge: .maxX)
+        }
     }
 
     override func layout() {
@@ -576,5 +609,11 @@ final class SelectionAskContainerView: NSView {
             max(bounds.maxY - buttonSize - margin, margin)
         )
         askButton.frame = NSRect(x: x, y: y, width: buttonSize, height: buttonSize)
+    }
+
+    private func closeChatPopover() {
+        chatPopover?.performClose(nil)
+        chatPopover = nil
+        chatHost = nil
     }
 }

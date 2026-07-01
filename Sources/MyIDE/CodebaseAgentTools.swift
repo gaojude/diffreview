@@ -176,21 +176,21 @@ struct CodebaseAgentToolbox: Sendable {
         switch toolName {
         case "get_git_diff":
             if let path = object["path"] as? String, !path.isEmpty {
-                return "Let me inspect the diff for \(lastPathComponent(path))."
+                return "Inspecting diff for \(lastPathComponent(path))"
             }
-            return "Let me inspect the git diff first."
+            return "Inspecting git diff"
         case "list_files":
-            return "I’m checking the project shape."
+            return "Listing project files"
         case "read_file":
             let path = (object["path"] as? String).map(lastPathComponent) ?? "that file"
-            return "I’m opening \(path)."
+            return "Reading \(path)"
         case "search_text":
             if let query = object["query"] as? String, !query.isEmpty {
-                return "I’m searching for \(spokenSearchTerm(query))."
+                return "Searching for \(searchTermLabel(query))"
             }
-            return "I’m searching the codebase."
+            return "Searching the codebase"
         default:
-            return "I’m checking one more thing."
+            return "Inspecting context"
         }
     }
 
@@ -448,7 +448,7 @@ struct CodebaseAgentToolbox: Sendable {
         URL(fileURLWithPath: path).lastPathComponent
     }
 
-    private func spokenSearchTerm(_ query: String) -> String {
+    private func searchTermLabel(_ query: String) -> String {
         let cleaned = query
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")

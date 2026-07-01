@@ -1,7 +1,21 @@
 import Foundation
 
+struct AgentToolEvent: Identifiable, Equatable, Sendable {
+    enum Status: Equatable, Sendable {
+        case started
+        case finished
+    }
+
+    let id: String
+    let name: String
+    let arguments: String
+    let status: Status
+    let outputPreview: String?
+}
+
 struct StreamingCodeAgentClient {
     typealias ProgressHandler = @MainActor (String) -> Void
+    typealias ToolEventHandler = @MainActor (AgentToolEvent) -> Void
     typealias DeltaHandler = @MainActor (String) -> Void
 
     func ask(
@@ -9,6 +23,7 @@ struct StreamingCodeAgentClient {
         context: CodeSelectionContext,
         rootURL: URL,
         onProgress: @escaping ProgressHandler,
+        onToolEvent: @escaping ToolEventHandler,
         onDelta: @escaping DeltaHandler
     ) async throws -> String {
         let configuration = try apiConfiguration()
@@ -47,12 +62,26 @@ struct StreamingCodeAgentClient {
                     arguments: toolCall.function.arguments
                 )
                 await onProgress(progress)
+                await onToolEvent(AgentToolEvent(
+                    id: toolCall.id,
+                    name: toolCall.function.name,
+                    arguments: toolCall.function.arguments,
+                    status: .started,
+                    outputPreview: nil
+                ))
                 let output = await Task.detached(priority: .userInitiated) {
                     toolbox.execute(
                         toolName: toolCall.function.name,
                         arguments: toolCall.function.arguments
                     )
                 }.value
+                await onToolEvent(AgentToolEvent(
+                    id: toolCall.id,
+                    name: toolCall.function.name,
+                    arguments: toolCall.function.arguments,
+                    status: .finished,
+                    outputPreview: Self.outputPreview(for: output)
+                ))
                 messages.append(.tool(toolCallID: toolCall.id, content: output))
             }
         }
@@ -206,13 +235,13 @@ struct StreamingCodeAgentClient {
     private var systemPrompt: String {
         """
         You are a concise senior code agent inside a native macOS IDE.
-        The user selected code and asked by voice. Treat the selection as the anchor, but inspect the repo with tools.
+        The user selected code and typed a question. Treat the selection as the anchor, but inspect the repo with tools.
         Always inspect git diff semantics first with get_git_diff before broader search/read calls.
         You may inspect the whole opened codebase through list_files, read_file, and search_text, but only request the specific files or searches you need.
         Use read-only tools only. Never ask for broad code dumps.
-        The app shows local progress messages for tool calls, so do not write "let me check" narration in the final answer.
-        Do not read code literally to the user. Avoid quoting code unless a tiny identifier is essential.
-        Final answer: explain what matters, cite files/lines when useful, and keep it short enough to speak aloud.
+        The app renders tool calls separately, so do not narrate each lookup in the final answer.
+        Avoid quoting code unless a tiny identifier is essential.
+        Final answer: explain what matters, cite files/lines when useful, and keep it concise.
         """
     }
 
@@ -222,7 +251,7 @@ struct StreamingCodeAgentClient {
         toolbox: CodebaseAgentToolbox
     ) -> String {
         """
-        Voice question:
+        User question:
         \(question)
 
         Selection anchor:
@@ -249,6 +278,17 @@ struct StreamingCodeAgentClient {
 
     private func environmentURL(_ name: String) -> URL? {
         environmentValue(name).flatMap(URL.init(string:))
+    }
+
+    private static func outputPreview(for output: String) -> String {
+        let normalized = output
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix(4)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "No output." }
+        if normalized.count <= 320 { return normalized }
+        return "\(normalized.prefix(320))..."
     }
 
     private struct APIConfiguration {
