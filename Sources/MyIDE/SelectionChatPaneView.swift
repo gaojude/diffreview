@@ -70,27 +70,17 @@ struct SelectionChatPaneView: View {
                         UserQuestionBubble(text: chat.submittedQuestion, fontSize: fontSize)
                     }
 
-                    if !chat.toolEvents.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(chat.toolEvents) { event in
-                                AgentToolEventRow(event: event, fontSize: fontSize) { reference in
-                                    chat.openCodeReference(reference)
-                                }
-                            }
-                        }
+                    if chat.isBusy {
+                        AgentProgressCard(
+                            activity: chat.currentActivity,
+                            toolEvents: chat.toolEvents,
+                            fontSize: fontSize
+                        )
                     }
 
                     if !chat.answer.isEmpty {
                         AssistantAnswerBlock(text: chat.answer, fontSize: fontSize) { reference in
                             chat.openCodeReference(reference)
-                        }
-                    } else if chat.isBusy {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(chat.currentActivity.isEmpty ? "Thinking" : chat.currentActivity)
-                                .font(.system(size: max(fontSize - 2, 10)))
-                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -175,7 +165,7 @@ struct SelectionChatPaneView: View {
     }
 
     private var hasTranscript: Bool {
-        !chat.submittedQuestion.isEmpty || !chat.answer.isEmpty || !chat.toolEvents.isEmpty || chat.isBusy
+        !chat.submittedQuestion.isEmpty || !chat.answer.isEmpty || chat.isBusy
     }
 
     private func focusComposer() {
@@ -251,102 +241,72 @@ private struct AssistantAnswerBlock: View {
     }
 }
 
-private struct AgentToolEventRow: View {
-    let event: AgentToolEvent
+private struct AgentProgressCard: View {
+    let activity: String
+    let toolEvents: [AgentToolEvent]
     let fontSize: CGFloat
-    let onOpenReference: (CodeReference) -> Void
-    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 6) {
-                if !formattedArguments.isEmpty {
-                    ToolDetailBlock(
-                        title: "Arguments",
-                        text: formattedArguments,
-                        fontSize: fontSize,
-                        onOpenReference: onOpenReference
-                    )
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(activity.isEmpty ? "Reading the code context" : activity)
+                        .font(.system(size: fontSize, weight: .medium))
+                    Text(summaryText)
+                        .font(.system(size: max(fontSize - 3, 9)))
+                        .foregroundStyle(.secondary)
                 }
-
-                if let outputPreview = event.outputPreview {
-                    ToolDetailBlock(
-                        title: "Output",
-                        text: outputPreview,
-                        fontSize: fontSize,
-                        onOpenReference: onOpenReference
-                    )
-                }
+                Spacer(minLength: 0)
             }
-            .padding(.top, 4)
-        } label: {
-            HStack(spacing: 7) {
-                if event.status == .finished {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .frame(width: 14)
-                } else {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .frame(width: 14)
+
+            HStack(spacing: 6) {
+                ForEach(progressSteps, id: \.self) { step in
+                    Text(step)
+                        .font(.system(size: max(fontSize - 4, 9), weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.84))
+                        )
                 }
-
-                Text(event.name)
-                    .font(.system(size: max(fontSize - 2, 10)))
-                    .fontWeight(.medium)
-                    .monospaced()
-
-                Spacer(minLength: 8)
-
-                Text(event.status == .finished ? "done" : "running")
-                    .font(.system(size: max(fontSize - 3, 9)))
-                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.72))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.10))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.24), lineWidth: 1)
         )
     }
 
-    private var formattedArguments: String {
-        let trimmed = event.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard
-            let data = trimmed.data(using: .utf8),
-            let object = try? JSONSerialization.jsonObject(with: data),
-            JSONSerialization.isValidJSONObject(object),
-            let formatted = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
-            let text = String(data: formatted, encoding: .utf8)
-        else {
-            return trimmed
+    private var summaryText: String {
+        let finished = toolEvents.filter { $0.status == .finished }.count
+        if finished == 0 {
+            return "Starting with the diff, then following only the relevant files."
         }
-        return text
+        let noun = finished == 1 ? "context step" : "context steps"
+        return "\(finished) \(noun) checked. I’ll show the answer when it is ready."
     }
-}
 
-private struct ToolDetailBlock: View {
-    let title: String
-    let text: String
-    let fontSize: CGFloat
-    let onOpenReference: (CodeReference) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: max(fontSize - 3, 9)))
-                .foregroundStyle(.secondary)
-            CodeLinkedMarkdownText(
-                text: text,
-                fontSize: max(fontSize - 3, 9),
-                monospaced: true,
-                lineLimit: 8,
-                onOpenReference: onOpenReference
-            )
-            .foregroundStyle(.tertiary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var progressSteps: [String] {
+        var labels: [String] = []
+        if toolEvents.contains(where: { $0.name == "get_git_diff" }) {
+            labels.append("diff")
         }
+        if toolEvents.contains(where: { $0.name == "search_text" || $0.name == "list_files" }) {
+            labels.append("search")
+        }
+        if toolEvents.contains(where: { $0.name == "read_file" }) {
+            labels.append("files")
+        }
+        return labels.isEmpty ? ["diff", "search", "files"] : labels
     }
 }
 
@@ -370,37 +330,31 @@ private struct CodeLinkedMarkdownText: View {
     }
 
     private var attributedText: AttributedString {
-        let linkedMarkdown = markdownWithCodeLinks(text)
-        if let attributed = try? AttributedString(
-            markdown: linkedMarkdown,
+        var attributed = (try? AttributedString(
+            markdown: text,
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        ) {
-            return attributed
-        }
-        return AttributedString(text)
+        )) ?? AttributedString(text)
+        applyCodeReferenceLinks(to: &attributed)
+        return attributed
     }
 
-    private func markdownWithCodeLinks(_ text: String) -> String {
-        let markdown = CodeReferenceParser.segments(in: text)
-            .map { segment in
-                guard let reference = segment.reference else { return segment.text }
-                return "[\(escapeMarkdownLinkLabel(segment.text))](\(reference.url.absoluteString))"
+    private func applyCodeReferenceLinks(to attributed: inout AttributedString) {
+        let plainText = String(attributed.characters)
+        var cursor = plainText.startIndex
+
+        for segment in CodeReferenceParser.segments(in: plainText) {
+            let nextCursor = plainText.index(cursor, offsetBy: segment.text.count, limitedBy: plainText.endIndex)
+                ?? plainText.endIndex
+            defer { cursor = nextCursor }
+
+            guard let reference = segment.reference,
+                  cursor < nextCursor,
+                  let lower = AttributedString.Index(cursor, within: attributed),
+                  let upper = AttributedString.Index(nextCursor, within: attributed) else {
+                continue
             }
-            .joined()
-        return unwrapCodeSpansAroundGeneratedLinks(markdown)
-    }
 
-    private func escapeMarkdownLinkLabel(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "[", with: "\\[")
-            .replacingOccurrences(of: "]", with: "\\]")
-    }
-
-    private func unwrapCodeSpansAroundGeneratedLinks(_ markdown: String) -> String {
-        let pattern = #"`(\[[^\]]+\]\(myide-code-ref://[^)]+\))`"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return markdown }
-        let range = NSRange(location: 0, length: (markdown as NSString).length)
-        return regex.stringByReplacingMatches(in: markdown, options: [], range: range, withTemplate: "$1")
+            attributed[lower..<upper].link = reference.url
+        }
     }
 }

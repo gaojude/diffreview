@@ -66,7 +66,7 @@ struct CodeReferenceSegment: Equatable {
 
 enum CodeReferenceParser {
     private static let regex = try! NSRegularExpression(
-        pattern: #"(?<![\w./-])([A-Za-z0-9_@+./-]+\.(?:c|cc|cpp|cs|css|go|h|hpp|html|java|js|jsx|kt|m|mm|md|mjs|php|py|rb|rs|scss|sh|sql|swift|toml|ts|tsx|txt|vue|xml|yaml|yml))(?:\:(\d{1,6})(?:-(\d{1,6}))?)?|:(\d{1,6})(?:-(\d{1,6}))?"#,
+        pattern: #"(?<![\w./-])([A-Za-z0-9_@+./-]+\.(?:swift|tsx|jsx|mjs|scss|yaml|toml|html|java|json|cpp|hpp|css|txt|vue|xml|sql|php|yml|rb|rs|py|kt|mm|md|js|ts|sh|go|cs|cc|c|h|m))(?![\w-])(?:\:(\d{1,6})(?:-(\d{1,6}))?)?|:(\d{1,6})(?:-(\d{1,6}))?"#,
         options: []
     )
 

@@ -82,12 +82,26 @@ struct MyIDEApp: App {
             Foundation.exit(3)
         }
 
+        let tsxReferences = CodeReferenceParser.references(in: """
+        <Link> clicks: packages/next/src/client/app-dir/link.tsx:303-313
+        """)
+        guard tsxReferences == [
+            CodeReference(
+                path: "packages/next/src/client/app-dir/link.tsx",
+                startLine: 303,
+                endLine: 313
+            ),
+        ] else {
+            writeSelfTestError("selection chat tsx code reference parser failed: \(tsxReferences)")
+            Foundation.exit(4)
+        }
+
         let host = NSHostingView(rootView: SelectionChatPaneView(chat: chat, fontSize: FontSizes.default))
         host.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
         host.layoutSubtreeIfNeeded()
         guard host.fittingSize.width > 0, host.fittingSize.height > 0 else {
             writeSelfTestError("selection chat pane did not produce a visible layout")
-            Foundation.exit(4)
+            Foundation.exit(5)
         }
 
         print("selection chat pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")

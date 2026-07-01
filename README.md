@@ -54,8 +54,8 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 
 Selection chat uses a streaming Chat Completions agent. The app has three work areas: the
 sidebar tree, the code pane, and the agent chat pane. Select a range in the code viewer, type a
-question in the chat pane, and watch the Markdown answer stream while read-only tool calls
-render in the chat pane. Chat text follows the same font size as the code viewer.
+question in the chat pane, and watch the Markdown answer stream after a compact progress state.
+Chat text follows the same font size as the code viewer.
 
 Click repo-relative references such as `packages/app/page.tsx:24-31` in chat or tool output to
 load that file in the code pane and highlight the cited lines. You can then select code in that
