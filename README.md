@@ -15,9 +15,9 @@ thin `my-ide` command — like `code .`, but native.
   plus local working-tree edits. Additions, deletions, hunks, and metadata are styled in a
   native `NSTextView`; oversized diffs show a placeholder instead of hanging.
 - **Voice codebase agent** — select code, click the microphone that appears beside the
-  selection, ask a question aloud, and get a spoken AI response. The selection anchors a read-only local context
-  pass over the opened project, including a repo map, project metadata, the selected file, and
-  relevant files found by path/content matches.
+  selection, ask a question aloud, and get a streamed AI response. The selection anchors a
+  read-only local agent loop: the model must inspect the Git diff first, then can call local
+  tools for file listing, file reads, and text search as needed.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -51,11 +51,10 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 
 ## Voice questions
 
-Voice questions use Apple Speech for local speech-to-text, a Responses-compatible model API for
-the answer, hosted text-to-speech for the spoken reply, and macOS speech synthesis only as a
-fallback. Select a range in the code viewer, then click the inline microphone beside the
-selection. The app builds a read-only local context pack from the opened project before sending
-the request.
+Voice questions use Apple Speech for local speech-to-text, a streaming Chat Completions agent
+for the answer, hosted text-to-speech for spoken progress/summary, and macOS speech synthesis
+only as a fallback. Select a range in the code viewer, then click the inline microphone beside
+the selection.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
@@ -72,11 +71,11 @@ export MYIDE_TTS_SPEED=1.04            # optional
 my-ide .
 ```
 
-On first use, macOS asks for Microphone and Speech Recognition permission. The app sends the
-spoken question, selected source/diff lines, repository map, selected file, project metadata, and
-relevant local text matches to the configured model provider. Generated/dependency directories
-such as `.git`, `.build`, `build`, and `node_modules` are ignored. A real selection is required
-before voice ask starts.
+On first use, macOS asks for Microphone and Speech Recognition permission. The first request
+sends only the spoken question, the selected lines, and the changed-file summary. After that, the
+model can call read-only local tools: `get_git_diff`, `list_files`, `read_file`, and
+`search_text`. Generated/dependency directories such as `.git`, `.build`, `build`, and
+`node_modules` are ignored. A real selection is required before voice ask starts.
 
 ## Testing
 

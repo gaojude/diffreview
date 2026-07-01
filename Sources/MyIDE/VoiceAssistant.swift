@@ -18,11 +18,12 @@ final class VoiceQuestionController: NSObject, ObservableObject {
     @Published private(set) var transcript = ""
     @Published private(set) var answer = ""
     @Published private(set) var contextLabel: String?
+    @Published private(set) var currentActivity = ""
 
     private let audioEngine = AVAudioEngine()
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let speechPlayer = SpeechPlaybackController()
-    private let client = OpenAICodeQuestionClient()
+    private let client = StreamingCodeAgentClient()
 
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -62,7 +63,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         case .listening:
             return transcript.isEmpty ? "Listening" : transcript
         case .thinking:
-            return "Thinking"
+            return currentActivity.isEmpty ? "Thinking" : currentActivity
         case .speaking:
             return "Speaking"
         case .failed(let message):
@@ -97,6 +98,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         stopSpeaking()
         transcript = ""
         answer = ""
+        currentActivity = ""
         activeContext = nil
         activeRootURL = nil
         contextLabel = nil
@@ -121,6 +123,7 @@ final class VoiceQuestionController: NSObject, ObservableObject {
 
         transcript = ""
         answer = ""
+        currentActivity = ""
         activeContext = context
         activeRootURL = rootURL
         contextLabel = context.locationLabel
@@ -137,9 +140,26 @@ final class VoiceQuestionController: NSObject, ObservableObject {
 
     private func ask(question: String, context: CodeSelectionContext?, rootURL: URL?) async {
         do {
-            let reply = try await client.ask(question: question, context: context, rootURL: rootURL)
+            guard let context, let rootURL else {
+                throw VoiceAssistantError.invalidResponse
+            }
+            currentActivity = "Let me inspect the diff first."
+            speakProgress(currentActivity)
+            let reply = try await client.ask(
+                question: question,
+                context: context,
+                rootURL: rootURL,
+                onProgress: { [weak self] message in
+                    self?.currentActivity = message
+                    self?.speakProgress(message)
+                },
+                onDelta: { [weak self] delta in
+                    self?.answer += delta
+                }
+            )
             answer = reply
-            speak(reply)
+            currentActivity = ""
+            speak(spokenAnswer(from: reply))
         } catch {
             phase = .failed(error.localizedDescription)
         }
@@ -257,6 +277,32 @@ final class VoiceQuestionController: NSObject, ObservableObject {
         }
     }
 
+    private func speakProgress(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.speechPlayer.speak(trimmed)
+        }
+    }
+
+    private func spokenAnswer(from text: String) -> String {
+        var spoken = text.replacingOccurrences(
+            of: "```[\\s\\S]*?```",
+            with: "the relevant code",
+            options: .regularExpression
+        )
+        spoken = spoken.replacingOccurrences(
+            of: "`([^`]+)`",
+            with: "$1",
+            options: .regularExpression
+        )
+        spoken = spoken
+            .replacingOccurrences(of: #"Sources/[^\s,.)]+"#, with: "the referenced file", options: .regularExpression)
+            .replacingOccurrences(of: #"[A-Za-z0-9_\-./]+\.(swift|ts|tsx|js|jsx|py|md|json|yml|yaml)"#, with: "the referenced file", options: .regularExpression)
+        return String(spoken.prefix(900))
+    }
+
     private func finishSpeakingIfNeeded() {
         guard phase == .speaking else { return }
         phase = .idle
@@ -289,183 +335,6 @@ private enum VoiceAssistantError: LocalizedError {
         case .api(let message):
             return message
         }
-    }
-}
-
-private struct OpenAICodeQuestionClient {
-    func ask(question: String, context: CodeSelectionContext?, rootURL: URL?) async throws -> String {
-        let configuration = try apiConfiguration()
-        let prompt = await userPrompt(question: question, context: context, rootURL: rootURL)
-        let payload = try JSONSerialization.data(withJSONObject: [
-            "model": configuration.model,
-            "input": [
-                [
-                    "role": "developer",
-                    "content": developerInstructions,
-                ],
-                [
-                    "role": "user",
-                    "content": prompt,
-                ],
-            ],
-            "max_output_tokens": 900,
-        ])
-
-        var request = URLRequest(url: configuration.baseURL.appendingPathComponent("responses"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = payload
-        request.timeoutInterval = 60
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw VoiceAssistantError.invalidResponse
-        }
-
-        guard 200..<300 ~= httpResponse.statusCode else {
-            if let apiError = try? JSONDecoder().decode(OpenAIErrorEnvelope.self, from: data) {
-                throw VoiceAssistantError.api(apiError.error.message)
-            }
-            throw VoiceAssistantError.api("OpenAI request failed with HTTP \(httpResponse.statusCode).")
-        }
-
-        let envelope = try JSONDecoder().decode(OpenAIResponseEnvelope.self, from: data)
-        let text = envelope.combinedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            throw VoiceAssistantError.invalidResponse
-        }
-        return text
-    }
-
-    private func apiConfiguration() throws -> APIConfiguration {
-        if let gatewayKey = environmentValue("AI_GATEWAY_API_KEY") {
-            return APIConfiguration(
-                apiKey: gatewayKey,
-                baseURL: environmentURL("AI_GATEWAY_BASE_URL")
-                    ?? environmentURL("MYIDE_AI_BASE_URL")
-                    ?? URL(string: "https://ai-gateway.vercel.sh/v1")!,
-                model: environmentValue("MYIDE_AI_MODEL")
-                    ?? environmentValue("AI_GATEWAY_MODEL")
-                    ?? environmentValue("OPENAI_MODEL")
-                    ?? "openai/gpt-5.5"
-            )
-        }
-
-        if let openAIKey = environmentValue("OPENAI_API_KEY") {
-            return APIConfiguration(
-                apiKey: openAIKey,
-                baseURL: environmentURL("OPENAI_BASE_URL")
-                    ?? environmentURL("MYIDE_AI_BASE_URL")
-                    ?? URL(string: "https://api.openai.com/v1")!,
-                model: environmentValue("MYIDE_AI_MODEL")
-                    ?? environmentValue("OPENAI_MODEL")
-                    ?? "gpt-5.5"
-            )
-        }
-
-        throw VoiceAssistantError.missingAPIKey
-    }
-
-    private var developerInstructions: String {
-        """
-        You are a concise senior coding agent inside a native macOS IDE.
-        The user asks by voice after selecting code. Treat the selection as the anchor, but reason over the provided codebase context.
-        The context was gathered locally and read-only from the opened project root. Do not claim access to files that are not included in the context.
-        Answer directly and practically. If more context is needed, name the missing file or symbol.
-        Keep answers short enough to be spoken aloud.
-        """
-    }
-
-    private func userPrompt(question: String, context: CodeSelectionContext?, rootURL: URL?) async -> String {
-        guard let context, let rootURL else {
-            return """
-            Question:
-            \(question)
-
-            No codebase context was available.
-            """
-        }
-
-        let snapshot = await Task.detached(priority: .userInitiated) {
-            CodebaseContextBuilder.build(rootURL: rootURL, selection: context, question: question)
-        }.value
-
-        return """
-        Question:
-        \(question)
-
-        Local read-only codebase context:
-        \(snapshot.promptText)
-        """
-    }
-
-    private func environmentValue(_ name: String) -> String? {
-        let value = ProcessInfo.processInfo.environment[name]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value?.isEmpty == false ? value : nil
-    }
-
-    private func environmentURL(_ name: String) -> URL? {
-        environmentValue(name).flatMap(URL.init(string:))
-    }
-
-    private static func clipped(_ text: String, maxCharacters: Int = 12_000) -> String {
-        guard text.count > maxCharacters else { return text }
-        return "\(text.prefix(maxCharacters))\n\n[Selection truncated]"
-    }
-
-    private struct APIConfiguration {
-        let apiKey: String
-        let baseURL: URL
-        let model: String
-    }
-}
-
-private struct OpenAIErrorEnvelope: Decodable {
-    let error: ErrorBody
-
-    struct ErrorBody: Decodable {
-        let message: String
-    }
-}
-
-private struct OpenAIResponseEnvelope: Decodable {
-    let outputText: String?
-    let output: [OutputItem]?
-
-    var combinedText: String {
-        if let outputText, !outputText.isEmpty {
-            return outputText
-        }
-
-        return output?
-            .flatMap { $0.content ?? [] }
-            .compactMap { item in
-                switch item.type {
-                case "output_text":
-                    return item.text
-                case "refusal":
-                    return item.refusal
-                default:
-                    return nil
-                }
-            }
-            .joined(separator: "\n") ?? ""
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case outputText = "output_text"
-        case output
-    }
-
-    struct OutputItem: Decodable {
-        let content: [ContentItem]?
-    }
-
-    struct ContentItem: Decodable {
-        let type: String
-        let text: String?
-        let refusal: String?
     }
 }
 
