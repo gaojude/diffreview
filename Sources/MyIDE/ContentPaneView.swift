@@ -15,6 +15,8 @@ struct ContentPaneView: View {
     @State private var state: LoadState = .empty
     @State private var displayedName: String?   // name of the file currently shown
     @State private var displayedContext: String?
+    @State private var selectionContext: CodeSelectionContext?
+    @StateObject private var voiceAssistant = VoiceQuestionController()
 
     enum LoadState {
         case empty
@@ -27,7 +29,14 @@ struct ContentPaneView: View {
     var body: some View {
         ZStack(alignment: .top) {
             contentLayer
-            floatingHeader
+            VStack(spacing: 8) {
+                floatingHeader
+                if voiceAssistant.showsPanel {
+                    voicePanel
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .textBackgroundColor))
@@ -53,12 +62,85 @@ struct ContentPaneView: View {
                 }
             }
             Spacer(minLength: 0)
+            if let selectionContext {
+                Text(selectionContext.lineLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Button {
+                toggleVoiceQuestion()
+            } label: {
+                Image(systemName: voiceAssistant.isListening ? "stop.circle.fill" : "mic.circle")
+            }
+            .buttonStyle(.borderless)
+            .disabled(voicePrimaryButtonDisabled)
+            .help(voiceAssistant.isListening ? "Ask" : "Start voice question")
+
+            if voiceAssistant.phase == .speaking {
+                Button {
+                    voiceAssistant.stopSpeaking()
+                } label: {
+                    Image(systemName: "speaker.slash")
+                }
+                .buttonStyle(.borderless)
+                .help("Stop speaking")
+            } else if !voiceAssistant.answer.isEmpty {
+                Button {
+                    voiceAssistant.replayAnswer()
+                } label: {
+                    Image(systemName: "speaker.wave.2")
+                }
+                .buttonStyle(.borderless)
+                .help("Replay answer")
+            }
+
+            if voiceAssistant.showsPanel {
+                Button {
+                    voiceAssistant.cancel()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Close voice answer")
+            }
         }
         .padding(.horizontal, 14)
         .frame(height: 46)
         .glassEffect(.regular, in: .rect(cornerRadius: 23))
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
+    }
+
+    private var voicePanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: voiceStatusIcon)
+                    .foregroundStyle(.secondary)
+                Text(voiceAssistant.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                if let contextLabel = voiceAssistant.contextLabel {
+                    Text(contextLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            if !voiceAssistant.answer.isEmpty {
+                Text(voiceAssistant.answer)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(6)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
     private var headerIcon: String {
@@ -69,6 +151,40 @@ struct ContentPaneView: View {
             return "sidebar.left"
         default:
             return "doc.text"
+        }
+    }
+
+    private var voiceStatusIcon: String {
+        switch voiceAssistant.phase {
+        case .authorizing:
+            return "lock.shield"
+        case .listening:
+            return "waveform"
+        case .thinking:
+            return "sparkles"
+        case .speaking:
+            return "speaker.wave.2"
+        case .failed:
+            return "exclamationmark.triangle"
+        case .idle:
+            return "checkmark.circle"
+        }
+    }
+
+    private var voicePrimaryButtonDisabled: Bool {
+        switch voiceAssistant.phase {
+        case .authorizing, .thinking:
+            return true
+        case .idle, .listening, .speaking, .failed:
+            return false
+        }
+    }
+
+    private func toggleVoiceQuestion() {
+        if voiceAssistant.isListening {
+            voiceAssistant.finishListeningAndAsk()
+        } else {
+            voiceAssistant.startListening(context: selectionContext)
         }
     }
 
@@ -84,10 +200,23 @@ struct ContentPaneView: View {
             ProgressView().controlSize(.small)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .text(let s):
-            CodeTextView(text: s, fileURL: fileURL, topInset: 56, fontSize: fontSize)
+            CodeTextView(
+                text: s,
+                fileURL: fileURL,
+                topInset: 56,
+                fontSize: fontSize,
+                onSelectionChange: { selectionContext = $0 }
+            )
                 .accessibilityIdentifier("content-view")
         case .diff(let s):
-            CodeTextView(text: s, fileURL: fileURL, contentKind: .diff, topInset: 62, fontSize: fontSize)
+            CodeTextView(
+                text: s,
+                fileURL: fileURL,
+                contentKind: .diff,
+                topInset: 62,
+                fontSize: fontSize,
+                onSelectionChange: { selectionContext = $0 }
+            )
                 .accessibilityIdentifier("content-view")
         case .message(let m):
             glassPlaceholder(m, systemImage: "doc")
@@ -118,6 +247,7 @@ struct ContentPaneView: View {
                 GitChangeSet.loadDiff(for: url, in: context)
             }.value
             if Task.isCancelled { return }
+            selectionContext = nil
             displayedName = url.lastPathComponent
             displayedContext = diffContextLabel(for: context)
             state = Self.map(result)
@@ -129,6 +259,7 @@ struct ContentPaneView: View {
         let result = await Task.detached(priority: .userInitiated) { FileSystem.loadForDisplay(url) }.value
         if Task.isCancelled { return }
         if case .isDirectory = result { return } // folder selected → keep the previous file
+        selectionContext = nil
         displayedName = url.lastPathComponent
         displayedContext = nil
         state = Self.map(result)

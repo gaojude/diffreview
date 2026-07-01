@@ -3,22 +3,42 @@ import AppKit
 import MyIDECore
 import Highlighter
 
+enum CodeContentKind: Equatable {
+    case source
+    case diff
+}
+
+struct CodeSelectionContext: Equatable {
+    let fileURL: URL?
+    let contentKind: CodeContentKind
+    let startLine: Int
+    let endLine: Int
+    let text: String
+
+    var lineLabel: String {
+        startLine == endLine ? "Line \(startLine)" : "Lines \(startLine)-\(endLine)"
+    }
+
+    var locationLabel: String {
+        if let fileURL {
+            return "\(fileURL.lastPathComponent) \(lineLabel)"
+        }
+        return lineLabel
+    }
+}
+
 /// Read-only, monospaced code viewer backed by AppKit's `NSTextView`. Native text layout
 /// handles large files far better than SwiftUI's `Text`, which is the point of using a
 /// representable here.
 struct CodeTextView: NSViewRepresentable {
-    enum ContentKind: Equatable {
-        case source
-        case diff
-    }
-
     let text: String
     let fileURL: URL?
-    var contentKind: ContentKind = .source
+    var contentKind: CodeContentKind = .source
     /// Space reserved at the top so content scrolls under the floating glass header.
     var topInset: CGFloat = 8
     /// Monospaced point size, driven by the View-menu font shortcuts.
     var fontSize: CGFloat = FontSizes.default
+    var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -56,9 +76,13 @@ struct CodeTextView: NSViewRepresentable {
         textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.lineBreakMode = .byClipping
         textView.setAccessibilityIdentifier("code-text")
+        textView.delegate = context.coordinator
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
+        context.coordinator.fileURL = fileURL
+        context.coordinator.contentKind = contentKind
+        context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.render(
             text,
             language: language,
@@ -72,6 +96,9 @@ struct CodeTextView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = context.coordinator.textView else { return }
+        context.coordinator.fileURL = fileURL
+        context.coordinator.contentKind = contentKind
+        context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.render(
             text,
             language: language,
@@ -91,19 +118,26 @@ struct CodeTextView: NSViewRepresentable {
         }
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         weak var textView: NSTextView?
         private let renderQueue = DispatchQueue(label: "com.judegao.myide.syntax-highlighting", qos: .userInitiated)
         private var highlighter: Highlighter?
         private var renderID = 0
         private var currentRenderKey: RenderKey?
 
+        var fileURL: URL?
+        var contentKind: CodeContentKind = .source
+        var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
         var currentText: String?
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            emitSelection()
+        }
 
         func render(
             _ text: String,
             language: String?,
-            contentKind: ContentKind,
+            contentKind: CodeContentKind,
             fontSize: CGFloat,
             appearance: NSAppearance,
             resetScroll: Bool
@@ -175,12 +209,82 @@ struct CodeTextView: NSViewRepresentable {
             if resetScroll {
                 textView.scroll(.zero)
             }
+            emitSelection()
+        }
+
+        private func emitSelection() {
+            guard let textView else {
+                onSelectionChange(nil)
+                return
+            }
+            onSelectionChange(Self.selectionContext(
+                in: textView,
+                fileURL: fileURL,
+                contentKind: contentKind
+            ))
+        }
+
+        private static func selectionContext(
+            in textView: NSTextView,
+            fileURL: URL?,
+            contentKind: CodeContentKind
+        ) -> CodeSelectionContext? {
+            let nsString = textView.string as NSString
+            guard nsString.length > 0 else { return nil }
+
+            let selectedRange = textView.selectedRange()
+            guard selectedRange.location != NSNotFound else { return nil }
+
+            let maxLocation = max(nsString.length - 1, 0)
+            let startLocation = min(selectedRange.location, maxLocation)
+            let endLocation: Int
+            if selectedRange.length == 0 {
+                endLocation = startLocation
+            } else {
+                endLocation = min(NSMaxRange(selectedRange) - 1, maxLocation)
+            }
+
+            let startLineRange = nsString.lineRange(for: NSRange(location: startLocation, length: 0))
+            let endLineRange = nsString.lineRange(for: NSRange(location: endLocation, length: 0))
+            let lineRange = NSUnionRange(startLineRange, endLineRange)
+            guard lineRange.location != NSNotFound, lineRange.length > 0 else { return nil }
+
+            let text = nsString.substring(with: lineRange)
+                .trimmingCharacters(in: .newlines)
+            guard !text.isEmpty else { return nil }
+
+            return CodeSelectionContext(
+                fileURL: fileURL,
+                contentKind: contentKind,
+                startLine: lineNumber(in: nsString, at: lineRange.location),
+                endLine: lineNumber(in: nsString, at: max(NSMaxRange(lineRange) - 1, lineRange.location)),
+                text: text
+            )
+        }
+
+        private static func lineNumber(in string: NSString, at location: Int) -> Int {
+            let cappedLocation = min(max(location, 0), string.length)
+            var line = 1
+            var searchStart = 0
+
+            while searchStart < cappedLocation {
+                let range = string.range(
+                    of: "\n",
+                    options: [],
+                    range: NSRange(location: searchStart, length: cappedLocation - searchStart)
+                )
+                guard range.location != NSNotFound else { break }
+                line += 1
+                searchStart = NSMaxRange(range)
+            }
+
+            return line
         }
 
         private static func plainString(
             _ text: String,
             font: NSFont,
-            contentKind: ContentKind,
+            contentKind: CodeContentKind,
             appearance: NSAppearance
         ) -> NSAttributedString {
             let string = NSAttributedString(
@@ -195,7 +299,7 @@ struct CodeTextView: NSViewRepresentable {
 
         private static func withContentStyling(
             _ attributedString: NSAttributedString,
-            contentKind: ContentKind,
+            contentKind: CodeContentKind,
             appearance: NSAppearance
         ) -> NSAttributedString {
             guard contentKind == .diff else { return attributedString }
@@ -280,7 +384,7 @@ struct CodeTextView: NSViewRepresentable {
     private struct RenderKey: Equatable {
         let text: String
         let language: String?
-        let contentKind: ContentKind
+        let contentKind: CodeContentKind
         let fontSize: CGFloat
         let themeName: String
     }

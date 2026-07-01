@@ -14,6 +14,9 @@ thin `my-ide` command — like `code .`, but native.
 - **Right diff pane** — selecting a changed file shows its Git patch against the PR merge-base
   plus local working-tree edits. Additions, deletions, hunks, and metadata are styled in a
   native `NSTextView`; oversized diffs show a placeholder instead of hanging.
+- **Voice questions on selected code** — select code or place the cursor on a line, click the
+  microphone in the floating header, ask a question aloud, and get a spoken AI response. The
+  selected source/diff lines are sent as context for the question.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -44,6 +47,21 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 ```
 
 `my-ide` with no argument opens the current directory; a non-existent path prints an error.
+
+## Voice questions
+
+Voice questions use Apple Speech for local speech-to-text, OpenAI's Responses API for the
+answer, and macOS speech synthesis for the spoken reply.
+
+```sh
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-5.5   # optional; this is the default
+my-ide .
+```
+
+On first use, macOS asks for Microphone and Speech Recognition permission. The app sends the
+spoken question plus the selected source/diff lines to OpenAI. If no range is selected, the
+line under the cursor is used.
 
 ## Testing
 

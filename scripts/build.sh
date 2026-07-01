@@ -33,6 +33,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSMicrophoneUsageDescription</key><string>MyIDE uses the microphone so you can ask voice questions about selected code.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>MyIDE uses speech recognition to transcribe voice questions about selected code.</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
