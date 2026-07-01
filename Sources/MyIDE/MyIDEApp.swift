@@ -141,6 +141,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class ProjectWindowController: NSObject, NSWindowDelegate {
     static let shared = ProjectWindowController()
 
+    private static let projectWindowStyleMask: NSWindow.StyleMask = [
+        .titled,
+        .closable,
+        .miniaturizable,
+        .resizable,
+        .fullSizeContentView,
+    ]
+
     private var projectWindow: NSWindow?
 
     func openProjectWindowIfNeeded(rootURL: URL, appState: AppState) {
@@ -153,8 +161,8 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
             .frame(minWidth: 1_060, minHeight: 520)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            contentRect: Self.initialWindowContentRect(),
+            styleMask: Self.projectWindowStyleMask,
             backing: .buffered,
             defer: false
         )
@@ -165,10 +173,24 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
         window.contentViewController = NSHostingController(rootView: content)
         window.isReleasedWhenClosed = false
         window.delegate = self
-        window.center()
+        window.setFrame(Self.initialWindowFrame(), display: false)
 
         projectWindow = window
         revealProjectWindow(retries: 8)
+    }
+
+    private static func initialWindowContentRect() -> NSRect {
+        let fallbackFrame = NSRect(x: 0, y: 0, width: 1_280, height: 760)
+        guard let screen = NSScreen.main else { return fallbackFrame }
+
+        return NSWindow.contentRect(
+            forFrameRect: screen.visibleFrame,
+            styleMask: Self.projectWindowStyleMask
+        )
+    }
+
+    private static func initialWindowFrame() -> NSRect {
+        NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_280, height: 760)
     }
 
     func revealProjectWindow(retries: Int) {
