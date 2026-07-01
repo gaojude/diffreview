@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SelectionChatOverlayView: View {
     @ObservedObject var chat: SelectionChatController
+    let fontSize: CGFloat
     @FocusState private var isComposerFocused: Bool
 
     private let bottomID = "selection-chat-bottom"
@@ -48,12 +49,12 @@ struct SelectionChatOverlayView: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(chat.statusText)
-                    .font(.caption)
+                    .font(.system(size: max(fontSize - 2, 10)))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 if let contextLabel = chat.contextLabel {
                     Text(contextLabel)
-                        .font(.caption2)
+                        .font(.system(size: max(fontSize - 3, 9)))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -77,25 +78,29 @@ struct SelectionChatOverlayView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if !chat.submittedQuestion.isEmpty {
-                        UserQuestionBubble(text: chat.submittedQuestion)
+                        UserQuestionBubble(text: chat.submittedQuestion, fontSize: fontSize)
                     }
 
                     if !chat.toolEvents.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(chat.toolEvents) { event in
-                                AgentToolEventRow(event: event)
+                                AgentToolEventRow(event: event, fontSize: fontSize) { reference in
+                                    chat.openCodeReference(reference)
+                                }
                             }
                         }
                     }
 
                     if !chat.answer.isEmpty {
-                        AssistantAnswerBlock(text: chat.answer)
+                        AssistantAnswerBlock(text: chat.answer, fontSize: fontSize) { reference in
+                            chat.openCodeReference(reference)
+                        }
                     } else if chat.isBusy {
                         HStack(spacing: 8) {
                             ProgressView()
                                 .controlSize(.small)
                             Text(chat.currentActivity.isEmpty ? "Thinking" : chat.currentActivity)
-                                .font(.caption)
+                                .font(.system(size: max(fontSize - 2, 10)))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -125,6 +130,7 @@ struct SelectionChatOverlayView: View {
             TextField("Ask about the selection", text: $chat.draft, axis: .vertical)
                 .lineLimit(1...4)
                 .textFieldStyle(.roundedBorder)
+                .font(.system(size: fontSize))
                 .focused($isComposerFocused)
                 .disabled(chat.isBusy)
                 .submitLabel(.send)
@@ -203,12 +209,13 @@ struct SelectionChatOverlayView: View {
 
 private struct UserQuestionBubble: View {
     let text: String
+    let fontSize: CGFloat
 
     var body: some View {
         HStack(alignment: .top) {
             Spacer(minLength: 48)
             Text(text)
-                .font(.callout)
+                .font(.system(size: fontSize))
                 .foregroundStyle(.white)
                 .textSelection(.enabled)
                 .padding(.horizontal, 10)
@@ -223,37 +230,55 @@ private struct UserQuestionBubble: View {
 
 private struct AssistantAnswerBlock: View {
     let text: String
+    let fontSize: CGFloat
+    let onOpenReference: (CodeReference) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "sparkles")
-                .font(.caption)
+                .font(.system(size: max(fontSize - 2, 10)))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
                 .padding(.top, 2)
 
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            CodeLinkedMarkdownText(
+                text: text,
+                fontSize: fontSize,
+                monospaced: false,
+                lineLimit: nil,
+                onOpenReference: onOpenReference
+            )
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
 
 private struct AgentToolEventRow: View {
     let event: AgentToolEvent
+    let fontSize: CGFloat
+    let onOpenReference: (CodeReference) -> Void
     @State private var isExpanded = false
 
     var body: some View {
         DisclosureGroup(isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: 6) {
                 if !formattedArguments.isEmpty {
-                    ToolDetailBlock(title: "Arguments", text: formattedArguments)
+                    ToolDetailBlock(
+                        title: "Arguments",
+                        text: formattedArguments,
+                        fontSize: fontSize,
+                        onOpenReference: onOpenReference
+                    )
                 }
 
                 if let outputPreview = event.outputPreview {
-                    ToolDetailBlock(title: "Output", text: outputPreview)
+                    ToolDetailBlock(
+                        title: "Output",
+                        text: outputPreview,
+                        fontSize: fontSize,
+                        onOpenReference: onOpenReference
+                    )
                 }
             }
             .padding(.top, 4)
@@ -270,14 +295,14 @@ private struct AgentToolEventRow: View {
                 }
 
                 Text(event.name)
-                    .font(.caption)
+                    .font(.system(size: max(fontSize - 2, 10)))
                     .fontWeight(.medium)
                     .monospaced()
 
                 Spacer(minLength: 8)
 
                 Text(event.status == .finished ? "done" : "running")
-                    .font(.caption2)
+                    .font(.system(size: max(fontSize - 3, 9)))
                     .foregroundStyle(.secondary)
             }
         }
@@ -307,19 +332,78 @@ private struct AgentToolEventRow: View {
 private struct ToolDetailBlock: View {
     let title: String
     let text: String
+    let fontSize: CGFloat
+    let onOpenReference: (CodeReference) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.caption2)
+                .font(.system(size: max(fontSize - 3, 9)))
                 .foregroundStyle(.secondary)
-            Text(text)
-                .font(.caption2)
-                .monospaced()
-                .foregroundStyle(.tertiary)
-                .textSelection(.enabled)
-                .lineLimit(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            CodeLinkedMarkdownText(
+                text: text,
+                fontSize: max(fontSize - 3, 9),
+                monospaced: true,
+                lineLimit: 8,
+                onOpenReference: onOpenReference
+            )
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private struct CodeLinkedMarkdownText: View {
+    let text: String
+    let fontSize: CGFloat
+    let monospaced: Bool
+    let lineLimit: Int?
+    let onOpenReference: (CodeReference) -> Void
+
+    var body: some View {
+        Text(attributedText)
+            .font(monospaced ? .system(size: fontSize, design: .monospaced) : .system(size: fontSize))
+            .lineLimit(lineLimit)
+            .textSelection(.enabled)
+            .environment(\.openURL, OpenURLAction { url in
+                guard let reference = CodeReference(url: url) else { return .systemAction }
+                onOpenReference(reference)
+                return .handled
+            })
+    }
+
+    private var attributedText: AttributedString {
+        let linkedMarkdown = markdownWithCodeLinks(text)
+        if let attributed = try? AttributedString(
+            markdown: linkedMarkdown,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            return attributed
+        }
+        return AttributedString(text)
+    }
+
+    private func markdownWithCodeLinks(_ text: String) -> String {
+        let markdown = CodeReferenceParser.segments(in: text)
+            .map { segment in
+                guard let reference = segment.reference else { return segment.text }
+                return "[\(escapeMarkdownLinkLabel(segment.text))](\(reference.url.absoluteString))"
+            }
+            .joined()
+        return unwrapCodeSpansAroundGeneratedLinks(markdown)
+    }
+
+    private func escapeMarkdownLinkLabel(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
+    }
+
+    private func unwrapCodeSpansAroundGeneratedLinks(_ markdown: String) -> String {
+        let pattern = #"`(\[[^\]]+\]\(myide-code-ref://[^)]+\))`"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return markdown }
+        let range = NSRange(location: 0, length: (markdown as NSString).length)
+        return regex.stringByReplacingMatches(in: markdown, options: [], range: range, withTemplate: "$1")
     }
 }

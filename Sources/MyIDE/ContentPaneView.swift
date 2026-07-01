@@ -17,6 +17,7 @@ struct ContentPaneView: View {
     @State private var displayedName: String?   // name of the file currently shown
     @State private var displayedContext: String?
     @State private var selectionContext: CodeSelectionContext?
+    @State private var secondaryReference: CodeReference?
     @StateObject private var selectionChat = SelectionChatController()
 
     enum LoadState {
@@ -28,6 +29,24 @@ struct ContentPaneView: View {
     }
 
     var body: some View {
+        HSplitView {
+            primaryPane
+                .frame(minWidth: 420)
+            CodeReferencePaneView(
+                rootURL: rootURL,
+                reference: secondaryReference,
+                fontSize: fontSize,
+                onClose: { secondaryReference = nil }
+            )
+            .frame(minWidth: 320, idealWidth: 460)
+        }
+        .onChange(of: selectionChat.referenceRequest?.id) { _, _ in
+            guard let request = selectionChat.referenceRequest else { return }
+            secondaryReference = request.reference
+        }
+    }
+
+    private var primaryPane: some View {
         ZStack(alignment: .top) {
             contentLayer
             floatingHeader

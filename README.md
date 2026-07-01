@@ -15,9 +15,10 @@ thin `my-ide` command — like `code .`, but native.
   plus local working-tree edits. Additions, deletions, hunks, and metadata are styled in a
   native `NSTextView`; oversized diffs show a placeholder instead of hanging.
 - **Selection chat agent** — select code, click the chat bubble beside the selection, type a
-  temporary question, and get a streamed AI response. The selection anchors a read-only local
-  agent loop: the model must inspect the Git diff first, then can call local tools for
-  full-codebase file listing, file reads, and text search as needed.
+  temporary question, and get a streamed Markdown AI response. File references like
+  `path/to/file.ts:12-18` are clickable and open in the secondary code pane. The selection
+  anchors a read-only local agent loop: the model must inspect the Git diff first, then can call
+  local tools for full-codebase file listing, file reads, and text search as needed.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -52,9 +53,13 @@ my-ide /some/other/dir   # or an explicit path inside a repository
 ## Selection chat
 
 Selection chat uses a streaming Chat Completions agent. Select a range in the code viewer, then
-click the inline chat bubble beside the selection. A temporary popover opens at the selection:
-type a question, send it, and watch the answer stream while read-only tool calls render in the
-popover.
+click the inline chat bubble beside the selection. A temporary overlay opens at the selection:
+type a question, send it, and watch the Markdown answer stream while read-only tool calls render
+in the overlay. Chat text follows the same font size as the code viewer.
+
+The detail area has two code panes: the main changed file and a secondary reference pane. Click
+repo-relative references such as `packages/app/page.tsx:24-31` in chat or tool output to load
+that file in the secondary pane and highlight the cited lines.
 
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway

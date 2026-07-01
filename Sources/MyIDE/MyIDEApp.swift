@@ -73,20 +73,33 @@ struct MyIDEApp: App {
         )
         chat.open(context: context, rootURL: rootURL)
         chat.draft = "What changed here?"
-        container.updateChatOverlay(chat: chat)
+        container.updateChatOverlay(chat: chat, fontSize: FontSizes.default)
         container.layoutSubtreeIfNeeded()
+
+        let references = CodeReferenceParser.references(in: """
+        See packages/next/src/client/components/router-reducer/ppr-navigations.ts:
+        - `:1001-1003`
+        """)
+        guard references.contains(CodeReference(
+            path: "packages/next/src/client/components/router-reducer/ppr-navigations.ts",
+            startLine: 1001,
+            endLine: 1003
+        )) else {
+            writeSelfTestError("selection chat code reference parser failed")
+            Foundation.exit(2)
+        }
 
         guard let frame = container._debugChatOverlayFrame() else {
             writeSelfTestError("selection chat overlay did not mount")
-            Foundation.exit(2)
+            Foundation.exit(3)
         }
         guard frame.width >= 440, frame.height >= 130 else {
             writeSelfTestError("selection chat overlay too small: \(frame)")
-            Foundation.exit(3)
+            Foundation.exit(4)
         }
         guard container.bounds.intersects(frame) else {
             writeSelfTestError("selection chat overlay outside container: \(frame)")
-            Foundation.exit(4)
+            Foundation.exit(5)
         }
 
         print("selection chat overlay ok frame=\(Int(frame.origin.x)),\(Int(frame.origin.y)) \(Int(frame.width))x\(Int(frame.height))")
@@ -135,17 +148,17 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
         }
 
         let content = RootView(appState: appState)
-            .frame(minWidth: 760, minHeight: 480)
+            .frame(minWidth: 1_060, minHeight: 520)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 1_280, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "MyIDE"
         window.representedURL = rootURL
-        window.minSize = NSSize(width: 760, height: 480)
+        window.minSize = NSSize(width: 1_060, height: 520)
         window.toolbarStyle = .unified
         window.contentViewController = NSHostingController(rootView: content)
         window.isReleasedWhenClosed = false

@@ -241,6 +241,7 @@ struct StreamingCodeAgentClient {
         Use read-only tools only. Never ask for broad code dumps.
         The app renders tool calls separately, so do not narrate each lookup in the final answer.
         Avoid quoting code unless a tiny identifier is essential.
+        When citing code, use repo-relative file references with line ranges, like path/to/file.ts:12-18, so the IDE can link them.
         Final answer: explain what matters, cite files/lines when useful, and keep it concise.
         """
     }

@@ -17,6 +17,7 @@ final class SelectionChatController: ObservableObject {
     @Published private(set) var contextLabel: String?
     @Published private(set) var currentActivity = ""
     @Published private(set) var toolEvents: [AgentToolEvent] = []
+    @Published private(set) var referenceRequest: CodeReferenceRequest?
 
     private let client = StreamingCodeAgentClient()
     private var activeContext: CodeSelectionContext?
@@ -59,6 +60,7 @@ final class SelectionChatController: ObservableObject {
         activeRootURL = rootURL
         contextLabel = context.locationLabel
         currentActivity = ""
+        referenceRequest = nil
         submittedQuestion = ""
         answer = ""
         toolEvents = []
@@ -72,6 +74,7 @@ final class SelectionChatController: ObservableObject {
         activeRootURL = nil
         contextLabel = nil
         currentActivity = ""
+        referenceRequest = nil
         submittedQuestion = ""
         answer = ""
         toolEvents = []
@@ -83,6 +86,10 @@ final class SelectionChatController: ObservableObject {
         cancelActiveTask()
         currentActivity = ""
         phase = .composing
+    }
+
+    func openCodeReference(_ reference: CodeReference) {
+        referenceRequest = CodeReferenceRequest(reference: reference)
     }
 
     func submit() {

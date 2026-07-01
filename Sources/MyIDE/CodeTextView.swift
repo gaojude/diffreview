@@ -39,6 +39,8 @@ struct CodeTextView: NSViewRepresentable {
     /// Monospaced point size, driven by the View-menu font shortcuts.
     var fontSize: CGFloat = FontSizes.default
     @ObservedObject var selectionChat: SelectionChatController
+    var allowsSelectionChat = true
+    var focusedLineRange: ClosedRange<Int>?
     var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
     var onAskSelection: (CodeSelectionContext?) -> Void = { _ in }
 
@@ -88,17 +90,19 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.observeScrollView(scrollView)
         context.coordinator.fileURL = fileURL
         context.coordinator.contentKind = contentKind
+        context.coordinator.allowsSelectionChat = allowsSelectionChat
         context.coordinator.isAskActive = selectionChat.isOpen
         context.coordinator.isAskBusy = selectionChat.isBusy
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onAskSelection = onAskSelection
         context.coordinator.updateAskButton()
-        container.updateChatOverlay(chat: selectionChat)
+        container.updateChatOverlay(chat: allowsSelectionChat ? selectionChat : nil, fontSize: fontSize)
         context.coordinator.render(
             text,
             language: language,
             contentKind: contentKind,
             fontSize: fontSize,
+            focusedLineRange: focusedLineRange,
             appearance: textView.effectiveAppearance,
             resetScroll: true
         )
@@ -109,17 +113,19 @@ struct CodeTextView: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         context.coordinator.fileURL = fileURL
         context.coordinator.contentKind = contentKind
+        context.coordinator.allowsSelectionChat = allowsSelectionChat
         context.coordinator.isAskActive = selectionChat.isOpen
         context.coordinator.isAskBusy = selectionChat.isBusy
         context.coordinator.onSelectionChange = onSelectionChange
         context.coordinator.onAskSelection = onAskSelection
         context.coordinator.updateAskButton()
-        nsView.updateChatOverlay(chat: selectionChat)
+        nsView.updateChatOverlay(chat: allowsSelectionChat ? selectionChat : nil, fontSize: fontSize)
         context.coordinator.render(
             text,
             language: language,
             contentKind: contentKind,
             fontSize: fontSize,
+            focusedLineRange: focusedLineRange,
             appearance: textView.effectiveAppearance,
             resetScroll: context.coordinator.currentText != text
         )
@@ -147,6 +153,7 @@ struct CodeTextView: NSViewRepresentable {
 
         var fileURL: URL?
         var contentKind: CodeContentKind = .source
+        var allowsSelectionChat = true
         var isAskActive = false
         var isAskBusy = false
         var onSelectionChange: (CodeSelectionContext?) -> Void = { _ in }
@@ -197,6 +204,15 @@ struct CodeTextView: NSViewRepresentable {
 
         func updateAskButton() {
             guard let containerView else { return }
+            guard allowsSelectionChat else {
+                containerView.updateAskButton(
+                    selectionRect: nil,
+                    isVisible: false,
+                    isActive: false,
+                    isEnabled: false
+                )
+                return
+            }
             let context = currentSelectionContext()
             let rect = currentSelectionRect()
             if let context, let rect {
@@ -217,6 +233,7 @@ struct CodeTextView: NSViewRepresentable {
             language: String?,
             contentKind: CodeContentKind,
             fontSize: CGFloat,
+            focusedLineRange: ClosedRange<Int>?,
             appearance: NSAppearance,
             resetScroll: Bool
         ) {
@@ -226,6 +243,7 @@ struct CodeTextView: NSViewRepresentable {
                 language: language,
                 contentKind: contentKind,
                 fontSize: fontSize,
+                focusedLineRange: focusedLineRange,
                 themeName: themeName
             )
             guard key != currentRenderKey else { return }
@@ -235,7 +253,17 @@ struct CodeTextView: NSViewRepresentable {
             let renderID = renderID
             let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
 
-            apply(Self.plainString(text, font: font, contentKind: contentKind, appearance: appearance), resetScroll: resetScroll)
+            apply(
+                Self.plainString(
+                    text,
+                    font: font,
+                    contentKind: contentKind,
+                    focusedLineRange: focusedLineRange,
+                    appearance: appearance
+                ),
+                focusedLineRange: focusedLineRange,
+                resetScroll: resetScroll
+            )
 
             renderQueue.async { [weak self] in
                 guard let self else { return }
@@ -245,16 +273,23 @@ struct CodeTextView: NSViewRepresentable {
                     font: font,
                     fontSize: fontSize,
                     themeName: themeName
-                ) ?? Self.plainString(text, font: font, contentKind: contentKind, appearance: appearance)
+                ) ?? Self.plainString(
+                    text,
+                    font: font,
+                    contentKind: contentKind,
+                    focusedLineRange: focusedLineRange,
+                    appearance: appearance
+                )
                 let rendered = Self.withContentStyling(
                     highlighted,
                     contentKind: contentKind,
+                    focusedLineRange: focusedLineRange,
                     appearance: appearance
                 )
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.renderID == renderID else { return }
-                    self.apply(rendered, resetScroll: false)
+                    self.apply(rendered, focusedLineRange: focusedLineRange, resetScroll: false)
                 }
             }
         }
@@ -281,13 +316,39 @@ struct CodeTextView: NSViewRepresentable {
             return result
         }
 
-        private func apply(_ attributedString: NSAttributedString, resetScroll: Bool) {
+        private func apply(
+            _ attributedString: NSAttributedString,
+            focusedLineRange: ClosedRange<Int>?,
+            resetScroll: Bool
+        ) {
             guard let textView else { return }
             textView.textStorage?.setAttributedString(attributedString)
-            if resetScroll {
+            if let focusedLineRange {
+                scrollToLine(focusedLineRange.lowerBound)
+            } else if resetScroll {
                 textView.scroll(.zero)
             }
             emitSelection()
+        }
+
+        private func scrollToLine(_ line: Int) {
+            guard
+                let textView,
+                let layoutManager = textView.layoutManager,
+                let textContainer = textView.textContainer
+            else {
+                return
+            }
+            let nsString = textView.string as NSString
+            guard let lineRange = Self.characterRange(forLineRange: line...line, in: nsString) else { return }
+            layoutManager.ensureLayout(for: textContainer)
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
+            guard glyphRange.location != NSNotFound else { return }
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textView.textContainerOrigin.x
+            rect.origin.y += textView.textContainerOrigin.y
+            rect = rect.insetBy(dx: -16, dy: -90)
+            textView.scrollToVisible(rect)
         }
 
         private func emitSelection() {
@@ -388,6 +449,7 @@ struct CodeTextView: NSViewRepresentable {
             _ text: String,
             font: NSFont,
             contentKind: CodeContentKind,
+            focusedLineRange: ClosedRange<Int>?,
             appearance: NSAppearance
         ) -> NSAttributedString {
             let string = NSAttributedString(
@@ -397,29 +459,71 @@ struct CodeTextView: NSViewRepresentable {
                     .foregroundColor: NSColor.textColor,
                 ]
             )
-            return withContentStyling(string, contentKind: contentKind, appearance: appearance)
+            return withContentStyling(
+                string,
+                contentKind: contentKind,
+                focusedLineRange: focusedLineRange,
+                appearance: appearance
+            )
         }
 
         private static func withContentStyling(
             _ attributedString: NSAttributedString,
             contentKind: CodeContentKind,
+            focusedLineRange: ClosedRange<Int>?,
             appearance: NSAppearance
         ) -> NSAttributedString {
-            guard contentKind == .diff else { return attributedString }
+            let result = NSMutableAttributedString(attributedString: attributedString)
 
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            let result = NSMutableAttributedString(attributedString: attributedString)
-            let nsString = result.string as NSString
-            var location = 0
+            if contentKind == .diff {
+                let nsString = result.string as NSString
+                var location = 0
 
-            while location < nsString.length {
-                let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
-                let line = nsString.substring(with: lineRange)
-                applyDiffStyle(to: result, line: line, range: lineRange, isDark: isDark)
-                location = NSMaxRange(lineRange)
+                while location < nsString.length {
+                    let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
+                    let line = nsString.substring(with: lineRange)
+                    applyDiffStyle(to: result, line: line, range: lineRange, isDark: isDark)
+                    location = NSMaxRange(lineRange)
+                }
+            }
+
+            if let focusedLineRange,
+               let characterRange = characterRange(forLineRange: focusedLineRange, in: result.string as NSString) {
+                result.addAttribute(
+                    .backgroundColor,
+                    value: NSColor.systemYellow.withAlphaComponent(isDark ? 0.24 : 0.20),
+                    range: characterRange
+                )
             }
 
             return result
+        }
+
+        private static func characterRange(forLineRange lineRange: ClosedRange<Int>, in string: NSString) -> NSRange? {
+            guard string.length > 0 else { return nil }
+            let lower = max(lineRange.lowerBound, 1)
+            let upper = max(lineRange.upperBound, lower)
+            var line = 1
+            var location = 0
+            var start: Int?
+            var end: Int?
+
+            while location < string.length {
+                let currentRange = string.lineRange(for: NSRange(location: location, length: 0))
+                if line == lower {
+                    start = currentRange.location
+                }
+                if line == upper {
+                    end = NSMaxRange(currentRange)
+                    break
+                }
+                location = NSMaxRange(currentRange)
+                line += 1
+            }
+
+            guard let start else { return nil }
+            return NSRange(location: start, length: max((end ?? string.length) - start, 0))
         }
 
         private static func applyDiffStyle(
@@ -489,6 +593,7 @@ struct CodeTextView: NSViewRepresentable {
         let language: String?
         let contentKind: CodeContentKind
         let fontSize: CGFloat
+        let focusedLineRange: ClosedRange<Int>?
         let themeName: String
     }
 }
@@ -543,8 +648,8 @@ final class SelectionAskContainerView: NSView {
         needsLayout = true
     }
 
-    func updateChatOverlay(chat: SelectionChatController) {
-        guard chat.isOpen else {
+    func updateChatOverlay(chat: SelectionChatController?, fontSize: CGFloat) {
+        guard let chat, chat.isOpen else {
             closeChatOverlay()
             return
         }
@@ -552,9 +657,9 @@ final class SelectionAskContainerView: NSView {
         let host: NSHostingView<SelectionChatOverlayView>
         if let existing = chatHost {
             host = existing
-            host.rootView = SelectionChatOverlayView(chat: chat)
+            host.rootView = SelectionChatOverlayView(chat: chat, fontSize: fontSize)
         } else {
-            let created = NSHostingView(rootView: SelectionChatOverlayView(chat: chat))
+            let created = NSHostingView(rootView: SelectionChatOverlayView(chat: chat, fontSize: fontSize))
             created.translatesAutoresizingMaskIntoConstraints = true
             created.setAccessibilityIdentifier("selection-chat-overlay")
             addSubview(created, positioned: .above, relativeTo: askButton)

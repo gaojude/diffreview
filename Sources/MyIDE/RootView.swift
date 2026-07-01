@@ -21,7 +21,7 @@ struct RootView: View {
                 changeTreeState: appState.changeTreeState,
                 fontSize: appState.fontSize
             )
-                .navigationSplitViewColumnWidth(min: 420, ideal: 720)
+                .navigationSplitViewColumnWidth(min: 760, ideal: 980)
         }
         .task { appState.loadChangeTreeIfNeeded() }
     }
