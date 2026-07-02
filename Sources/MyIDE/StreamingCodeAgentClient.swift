@@ -13,18 +13,27 @@ struct AgentToolEvent: Identifiable, Equatable, Sendable {
     let outputPreview: String?
 }
 
+struct AgentFixProposal: Equatable, Codable, Sendable {
+    let title: String
+    let summary: String
+    let prompt: String
+}
+
 struct StreamingCodeAgentClient {
     typealias ProgressHandler = @MainActor (String) -> Void
     typealias ToolEventHandler = @MainActor (AgentToolEvent) -> Void
     typealias DeltaHandler = @MainActor (String) -> Void
+    typealias FixProposalHandler = @MainActor (AgentFixProposal) -> Void
 
     func ask(
         question: String,
         context: CodeSelectionContext,
         rootURL: URL,
+        forceFixCapture: Bool = false,
         onProgress: @escaping ProgressHandler,
         onToolEvent: @escaping ToolEventHandler,
-        onDelta: @escaping DeltaHandler
+        onDelta: @escaping DeltaHandler,
+        onFixProposal: FixProposalHandler? = nil
     ) async throws -> String {
         let configuration = try apiConfiguration()
         let toolbox = CodebaseAgentToolbox(rootURL: rootURL, selection: context)
@@ -33,14 +42,24 @@ struct StreamingCodeAgentClient {
             .user(initialPrompt(question: question, context: context, toolbox: toolbox)),
         ]
 
-        for _ in 0..<8 {
+        for iteration in 0..<8 {
+            let toolChoice: Any?
+            if iteration == 0 {
+                toolChoice = Self.requiredToolChoice("get_git_diff")
+            } else if forceFixCapture && !messages.containsToolCall(named: "capture_fix") {
+                toolChoice = Self.requiredToolChoice("capture_fix")
+            } else {
+                toolChoice = "auto"
+            }
+
             let result = try await streamChatCompletion(
                 configuration: configuration,
                 messages: messages,
-                tools: CodebaseAgentToolbox.toolDefinitions,
-                toolChoice: "auto",
+                tools: Self.toolDefinitions,
+                toolChoice: toolChoice,
                 onDelta: onDelta
             )
+            try Task.checkCancellation()
 
             guard !result.toolCalls.isEmpty else {
                 let text = result.content.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -56,33 +75,16 @@ struct StreamingCodeAgentClient {
 
             messages.append(.assistant(content: result.content, toolCalls: result.toolCalls))
 
-            for toolCall in result.toolCalls {
-                let progress = toolbox.progressMessage(
-                    for: toolCall.function.name,
-                    arguments: toolCall.function.arguments
-                )
-                await onProgress(progress)
-                await onToolEvent(AgentToolEvent(
-                    id: toolCall.id,
-                    name: toolCall.function.name,
-                    arguments: toolCall.function.arguments,
-                    status: .started,
-                    outputPreview: nil
-                ))
-                let output = await Task.detached(priority: .userInitiated) {
-                    toolbox.execute(
-                        toolName: toolCall.function.name,
-                        arguments: toolCall.function.arguments
-                    )
-                }.value
-                await onToolEvent(AgentToolEvent(
-                    id: toolCall.id,
-                    name: toolCall.function.name,
-                    arguments: toolCall.function.arguments,
-                    status: .finished,
-                    outputPreview: Self.outputPreview(for: output)
-                ))
-                messages.append(.tool(toolCallID: toolCall.id, content: output))
+            let outputs = await executeToolCalls(
+                result.toolCalls,
+                toolbox: toolbox,
+                onProgress: onProgress,
+                onToolEvent: onToolEvent,
+                onFixProposal: onFixProposal
+            )
+            try Task.checkCancellation()
+            for output in outputs {
+                messages.append(.tool(toolCallID: output.toolCall.id, content: output.output))
             }
         }
 
@@ -97,7 +99,7 @@ struct StreamingCodeAgentClient {
         configuration: APIConfiguration,
         messages: [ChatMessage],
         tools: [[String: Any]],
-        toolChoice: String?,
+        toolChoice: Any?,
         onDelta: @escaping DeltaHandler
     ) async throws -> StreamResult {
         var payload: [String: Any] = [
@@ -109,6 +111,7 @@ struct StreamingCodeAgentClient {
         ]
         if !tools.isEmpty {
             payload["tools"] = tools
+            payload["parallel_tool_calls"] = true
         }
         if let toolChoice {
             payload["tool_choice"] = toolChoice
@@ -127,55 +130,89 @@ struct StreamingCodeAgentClient {
             throw AgentClientError.invalidResponse
         }
         guard 200..<300 ~= httpResponse.statusCode else {
-            throw AgentClientError.api("Agent request failed with HTTP \(httpResponse.statusCode).")
+            let bodyPreview = try await Self.readBodyPreview(bytes)
+            let detail = bodyPreview.isEmpty ? "" : " \(bodyPreview)"
+            throw AgentClientError.api("Agent request failed with HTTP \(httpResponse.statusCode).\(detail)")
         }
 
         var content = ""
         var builders: [Int: ToolCallBuilder] = [:]
 
         for try await line in bytes.lines {
+            try Task.checkCancellation()
             guard line.hasPrefix("data:") else { continue }
-            let dataLine = line.dropFirst(5).trimmingCharacters(in: .whitespacesAndNewlines)
-            if dataLine == "[DONE]" { break }
-            guard let data = dataLine.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = object["choices"] as? [[String: Any]],
-                  let choice = choices.first else {
-                continue
+            var dataLine = String(line.dropFirst(5))
+            if dataLine.first == " " {
+                dataLine.removeFirst()
             }
-
-            if let delta = choice["delta"] as? [String: Any] {
-                if let contentDelta = delta["content"] as? String, !contentDelta.isEmpty {
-                    content += contentDelta
-                    await onDelta(contentDelta)
-                }
-
-                if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
-                    for rawToolCall in toolCalls {
-                        let index = rawToolCall["index"] as? Int ?? builders.count
-                        var builder = builders[index] ?? ToolCallBuilder(index: index)
-                        if let id = rawToolCall["id"] as? String {
-                            builder.id += id
-                        }
-                        if let type = rawToolCall["type"] as? String {
-                            builder.type = type
-                        }
-                        if let function = rawToolCall["function"] as? [String: Any] {
-                            if let name = function["name"] as? String {
-                                builder.name += name
-                            }
-                            if let arguments = function["arguments"] as? String {
-                                builder.arguments += arguments
-                            }
-                        }
-                        builders[index] = builder
-                    }
-                }
-            }
+            let shouldContinue = try await processStreamEvent(
+                dataLine,
+                content: &content,
+                builders: &builders,
+                onDelta: onDelta
+            )
+            if !shouldContinue { break }
         }
 
         let toolCalls = builders.keys.sorted().compactMap { builders[$0]?.toolCall }
         return StreamResult(content: content, toolCalls: toolCalls)
+    }
+
+    private func processStreamEvent(
+        _ dataLine: String,
+        content: inout String,
+        builders: inout [Int: ToolCallBuilder],
+        onDelta: @escaping DeltaHandler
+    ) async throws -> Bool {
+        let trimmed = dataLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        if trimmed == "[DONE]" { return false }
+        guard let data = trimmed.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return true
+        }
+
+        if let error = object["error"] as? [String: Any] {
+            throw AgentClientError.api(Self.apiErrorMessage(error))
+        }
+
+        guard let choices = object["choices"] as? [[String: Any]],
+              let choice = choices.first else {
+            return true
+        }
+
+        guard let delta = choice["delta"] as? [String: Any] else {
+            return true
+        }
+
+        if let contentDelta = delta["content"] as? String, !contentDelta.isEmpty {
+            content += contentDelta
+            await onDelta(contentDelta)
+        }
+
+        if let toolCalls = delta["tool_calls"] as? [[String: Any]] {
+            for rawToolCall in toolCalls {
+                let index = rawToolCall["index"] as? Int ?? builders.count
+                var builder = builders[index] ?? ToolCallBuilder(index: index)
+                if let id = rawToolCall["id"] as? String {
+                    builder.id += id
+                }
+                if let type = rawToolCall["type"] as? String {
+                    builder.type = type
+                }
+                if let function = rawToolCall["function"] as? [String: Any] {
+                    if let name = function["name"] as? String {
+                        builder.name += name
+                    }
+                    if let arguments = function["arguments"] as? String {
+                        builder.arguments += arguments
+                    }
+                }
+                builders[index] = builder
+            }
+        }
+
+        return true
     }
 
     private func forceFinalAnswer(
@@ -201,6 +238,97 @@ struct StreamingCodeAgentClient {
             throw AgentClientError.invalidResponse
         }
         return text
+    }
+
+    private func executeToolCalls(
+        _ toolCalls: [AgentToolCall],
+        toolbox: CodebaseAgentToolbox,
+        onProgress: @escaping ProgressHandler,
+        onToolEvent: @escaping ToolEventHandler,
+        onFixProposal: FixProposalHandler?
+    ) async -> [ToolExecutionResult] {
+        for toolCall in toolCalls {
+            let progress = progressMessage(for: toolCall, toolbox: toolbox)
+            await onProgress(progress)
+            await onToolEvent(AgentToolEvent(
+                id: toolCall.id,
+                name: toolCall.function.name,
+                arguments: toolCall.function.arguments,
+                status: .started,
+                outputPreview: nil
+            ))
+        }
+
+        return await withTaskGroup(of: ToolExecutionResult.self) { group in
+            for (position, toolCall) in toolCalls.enumerated() {
+                group.addTask(priority: .userInitiated) {
+                    let output: String
+                    let fixProposal: AgentFixProposal?
+                    if toolCall.function.name == "capture_fix" {
+                        let parsed = Self.parseFixProposal(arguments: toolCall.function.arguments)
+                        fixProposal = parsed
+                        if let parsed {
+                            output = "Captured fix proposal: \(parsed.title)"
+                        } else {
+                            output = "Could not capture fix proposal: invalid arguments."
+                        }
+                    } else {
+                        fixProposal = nil
+                        output = toolbox.execute(
+                            toolName: toolCall.function.name,
+                            arguments: toolCall.function.arguments
+                        )
+                    }
+                    return ToolExecutionResult(
+                        position: position,
+                        toolCall: toolCall,
+                        output: output,
+                        fixProposal: fixProposal
+                    )
+                }
+            }
+
+            var results: [ToolExecutionResult] = []
+            for await result in group {
+                if let fixProposal = result.fixProposal {
+                    await onFixProposal?(fixProposal)
+                }
+                await onToolEvent(AgentToolEvent(
+                    id: result.toolCall.id,
+                    name: result.toolCall.function.name,
+                    arguments: result.toolCall.function.arguments,
+                    status: .finished,
+                    outputPreview: Self.outputPreview(for: result.output)
+                ))
+                results.append(result)
+            }
+
+            return results.sorted { $0.position < $1.position }
+        }
+    }
+
+    private func progressMessage(for toolCall: AgentToolCall, toolbox: CodebaseAgentToolbox) -> String {
+        if toolCall.function.name == "capture_fix" {
+            return "Preparing a fix"
+        }
+        return toolbox.progressMessage(
+            for: toolCall.function.name,
+            arguments: toolCall.function.arguments
+        )
+    }
+
+    private static func parseFixProposal(arguments: String) -> AgentFixProposal? {
+        guard let data = arguments.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(AgentFixProposal.self, from: data)
+    }
+
+    private static func requiredToolChoice(_ name: String) -> [String: Any] {
+        [
+            "type": "function",
+            "function": [
+                "name": name,
+            ],
+        ]
     }
 
     private func apiConfiguration() throws -> APIConfiguration {
@@ -229,6 +357,18 @@ struct StreamingCodeAgentClient {
             )
         }
 
+        if let anthropicGatewayKey = environmentValue("ANTHROPIC_AUTH_TOKEN"),
+           let baseURL = environmentURL("ANTHROPIC_BASE_URL"),
+           baseURL.host?.contains("ai-gateway.vercel.sh") == true {
+            return APIConfiguration(
+                apiKey: anthropicGatewayKey,
+                baseURL: openAICompatibleGatewayBaseURL(from: baseURL),
+                model: environmentValue("MYIDE_AI_MODEL")
+                    ?? environmentValue("ANTHROPIC_MODEL")
+                    ?? "anthropic/claude-opus-4.8"
+            )
+        }
+
         throw AgentClientError.missingAPIKey
     }
 
@@ -238,6 +378,10 @@ struct StreamingCodeAgentClient {
         The user selected code and typed a question. Treat the selection as the anchor, but inspect the repo with tools.
         Always inspect git diff semantics first with get_git_diff before broader search/read calls.
         You may inspect the whole opened codebase through list_files, read_file, and search_text, but only request the specific files or searches you need.
+        If the user asks you to implement, fix, rename, or otherwise make a code change, do not pretend to edit code. Instead call capture_fix with a polished, paste-ready implementation prompt that you write yourself.
+        capture_fix content must not be a raw copy of the chat. Include the target, the intended behavior, why it matters, and any tests or verification a coding agent should run.
+        When multiple independent lookups are useful, batch them in the same tool-calling turn.
+        When you need tools, return tool calls without user-visible prose; the app already shows progress.
         Use read-only tools only. Never ask for broad code dumps.
         The app shows compact progress separately, so do not narrate each lookup in the final answer.
         Avoid quoting code unless a tiny identifier is essential.
@@ -281,6 +425,14 @@ struct StreamingCodeAgentClient {
         environmentValue(name).flatMap(URL.init(string:))
     }
 
+    private func openAICompatibleGatewayBaseURL(from baseURL: URL) -> URL {
+        let path = baseURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path == "v1" || path.hasSuffix("/v1") {
+            return baseURL
+        }
+        return baseURL.appendingPathComponent("v1")
+    }
+
     private static func outputPreview(for output: String) -> String {
         let normalized = output
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -292,6 +444,63 @@ struct StreamingCodeAgentClient {
         return "\(normalized.prefix(320))..."
     }
 
+    private static func readBodyPreview(_ bytes: URLSession.AsyncBytes, maxBytes: Int = 4_096) async throws -> String {
+        var data = Data()
+        for try await byte in bytes {
+            if data.count >= maxBytes { break }
+            data.append(byte)
+        }
+        return String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
+    }
+
+    private static func apiErrorMessage(_ error: [String: Any]) -> String {
+        let message = error["message"] as? String
+            ?? error["error"] as? String
+            ?? "The provider returned an error."
+        let type = error["type"] as? String
+        let code = error["code"] as? String
+        return [type, code, message]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ": ")
+    }
+
+    private static var toolDefinitions: [[String: Any]] {
+        CodebaseAgentToolbox.toolDefinitions + [captureFixToolDefinition]
+    }
+
+    private static var captureFixToolDefinition: [String: Any] {
+        [
+            "type": "function",
+            "function": [
+                "name": "capture_fix",
+                "description": "Capture a paste-ready implementation prompt when the user wants a code change. The app stores this fix for handoff; no files are edited by this chat.",
+                "strict": true,
+                "parameters": [
+                    "type": "object",
+                    "properties": [
+                        "title": [
+                            "type": "string",
+                            "description": "Short action title for the fix.",
+                        ],
+                        "summary": [
+                            "type": "string",
+                            "description": "One or two sentences describing the intended code change.",
+                        ],
+                        "prompt": [
+                            "type": "string",
+                            "description": "A complete, paste-ready prompt for a coding agent. Include file paths, relevant line ranges, implementation guidance, and tests or checks to run.",
+                        ],
+                    ],
+                    "required": ["title", "summary", "prompt"],
+                    "additionalProperties": false,
+                ],
+            ],
+        ]
+    }
+
     private struct APIConfiguration {
         let apiKey: String
         let baseURL: URL
@@ -301,6 +510,13 @@ struct StreamingCodeAgentClient {
     private struct StreamResult {
         let content: String
         let toolCalls: [AgentToolCall]
+    }
+
+    private struct ToolExecutionResult: Sendable {
+        let position: Int
+        let toolCall: AgentToolCall
+        let output: String
+        let fixProposal: AgentFixProposal?
     }
 
     private struct ToolCallBuilder {
@@ -375,6 +591,20 @@ private struct ChatMessage {
             "tool_call_id": toolCallID,
             "content": content,
         ])
+    }
+
+    func containsToolCall(named name: String) -> Bool {
+        guard let toolCalls = dictionary["tool_calls"] as? [[String: Any]] else { return false }
+        return toolCalls.contains { toolCall in
+            guard let function = toolCall["function"] as? [String: Any] else { return false }
+            return function["name"] as? String == name
+        }
+    }
+}
+
+private extension Array where Element == ChatMessage {
+    func containsToolCall(named name: String) -> Bool {
+        contains { $0.containsToolCall(named: name) }
     }
 }
 

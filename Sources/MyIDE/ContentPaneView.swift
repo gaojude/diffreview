@@ -20,6 +20,8 @@ struct ContentPaneView: View {
     @State private var selectionContext: CodeSelectionContext?
     @State private var activeReference: CodeReference?
     @StateObject private var selectionChat = SelectionChatController()
+    @StateObject private var promptAccumulator = PromptAccumulatorController()
+    @State private var assistantTab: AssistantPaneTab = .chat
 
     enum LoadState {
         case empty
@@ -33,11 +35,8 @@ struct ContentPaneView: View {
         HSplitView {
             primaryPane
                 .frame(minWidth: 520)
-            SelectionChatPaneView(
-                chat: selectionChat,
-                fontSize: fontSize
-            )
-            .frame(minWidth: 320, idealWidth: 420)
+            assistantPane
+                .frame(minWidth: 320, idealWidth: 420)
         }
         .onChange(of: fileURL) { _, _ in
             activeReference = nil
@@ -46,6 +45,82 @@ struct ContentPaneView: View {
             guard let request = selectionChat.referenceRequest else { return }
             activeReference = request.reference
         }
+        .task(id: assistantPersistenceID) {
+            configureAssistantPersistence()
+        }
+    }
+
+    private var assistantPane: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $assistantTab) {
+                Label("Chat", systemImage: "text.bubble")
+                    .tag(AssistantPaneTab.chat)
+                Label(fixesTabTitle, systemImage: "checklist")
+                    .tag(AssistantPaneTab.fixes)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            switch assistantTab {
+            case .chat:
+                SelectionChatPaneView(
+                    chat: selectionChat,
+                    fontSize: fontSize,
+                    onCaptureFix: captureFix
+                )
+            case .fixes:
+                PromptFixListView(
+                    accumulator: promptAccumulator,
+                    fontSize: fontSize
+                )
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var fixesTabTitle: String {
+        promptAccumulator.items.isEmpty ? "Fixes" : "Fixes \(promptAccumulator.items.count)"
+    }
+
+    @discardableResult
+    private func captureFix(proposal: AgentFixProposal, snapshot: PromptFixSnapshot) -> PromptFixItem? {
+        let item = promptAccumulator.capture(proposal: proposal, snapshot: snapshot)
+        assistantTab = .fixes
+        return item
+    }
+
+    private var assistantPersistenceID: String {
+        "\(rootURL.standardizedFileURL.resolvingSymlinksInPath().path)#\(assistantBranchName)"
+    }
+
+    private var assistantBranchName: String {
+        switch changeTreeState {
+        case .loaded(let context):
+            return context.branchName
+        case .notRepository:
+            return "no-git"
+        case .loading:
+            return "loading"
+        }
+    }
+
+    private func configureAssistantPersistence() {
+        guard assistantBranchName != "loading" else { return }
+        let store = AssistantPersistenceStore(
+            rootURL: rootURL,
+            branchName: assistantBranchName
+        )
+        selectionChat.configurePersistence(store: store)
+        promptAccumulator.configurePersistence(store: store)
+    }
+
+    private enum AssistantPaneTab: Hashable {
+        case chat
+        case fixes
     }
 
     private var primaryPane: some View {

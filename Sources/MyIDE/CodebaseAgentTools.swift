@@ -7,16 +7,19 @@ struct CodebaseAgentToolbox: Sendable {
 
     private let resolvedRootURL: URL
     private let changeContext: GitChangeContext?
+    private let fileInventoryCache: [String]
 
     init(rootURL: URL, selection: CodeSelectionContext) {
         self.rootURL = rootURL
         self.selection = selection
-        self.resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedRootURL = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        self.resolvedRootURL = resolvedRootURL
         if case .repository(let context) = GitChangeSet.load(for: rootURL) {
             self.changeContext = context
         } else {
             self.changeContext = nil
         }
+        self.fileInventoryCache = Self.buildFileInventory(rootURL: resolvedRootURL)
     }
 
     var selectedPath: String {
@@ -38,18 +41,20 @@ struct CodebaseAgentToolbox: Sendable {
                 "function": [
                     "name": "get_git_diff",
                     "description": "Read the branch/worktree git diff. Call this first to understand the semantic change before reading arbitrary files.",
+                    "strict": true,
                     "parameters": [
                         "type": "object",
                         "properties": [
                             "path": [
-                                "type": "string",
+                                "type": ["string", "null"],
                                 "description": "Optional path relative to the opened root. Omit for the selected file plus the broader change set.",
                             ],
                             "max_chars": [
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "description": "Maximum characters to return.",
                             ],
                         ],
+                        "required": ["path", "max_chars"],
                         "additionalProperties": false,
                     ],
                 ],
@@ -59,18 +64,20 @@ struct CodebaseAgentToolbox: Sendable {
                 "function": [
                     "name": "list_files",
                     "description": "List source-like files under the opened root. Use this to find nearby or related files without reading them all.",
+                    "strict": true,
                     "parameters": [
                         "type": "object",
                         "properties": [
                             "query": [
-                                "type": "string",
+                                "type": ["string", "null"],
                                 "description": "Optional case-insensitive substring to match against paths.",
                             ],
                             "limit": [
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "description": "Maximum number of paths to return.",
                             ],
                         ],
+                        "required": ["query", "limit"],
                         "additionalProperties": false,
                     ],
                 ],
@@ -80,6 +87,7 @@ struct CodebaseAgentToolbox: Sendable {
                 "function": [
                     "name": "read_file",
                     "description": "Read one local text file by path. Use line ranges when possible.",
+                    "strict": true,
                     "parameters": [
                         "type": "object",
                         "properties": [
@@ -88,19 +96,19 @@ struct CodebaseAgentToolbox: Sendable {
                                 "description": "Path relative to the opened root.",
                             ],
                             "start_line": [
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "description": "Optional 1-based start line.",
                             ],
                             "end_line": [
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "description": "Optional 1-based end line.",
                             ],
                             "max_chars": [
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "description": "Maximum characters to return.",
                             ],
                         ],
-                        "required": ["path"],
+                        "required": ["path", "start_line", "end_line", "max_chars"],
                         "additionalProperties": false,
                     ],
                 ],
@@ -110,6 +118,7 @@ struct CodebaseAgentToolbox: Sendable {
                 "function": [
                     "name": "search_text",
                     "description": "Search local text files for a literal string. Use this to follow symbols, imports, filenames, or error text.",
+                    "strict": true,
                     "parameters": [
                         "type": "object",
                         "properties": [
@@ -118,15 +127,15 @@ struct CodebaseAgentToolbox: Sendable {
                                 "description": "Literal text to search for.",
                             ],
                             "path_prefix": [
-                                "type": "string",
+                                "type": ["string", "null"],
                                 "description": "Optional path prefix relative to the opened root.",
                             ],
                             "max_results": [
-                                "type": "integer",
+                                "type": ["integer", "null"],
                                 "description": "Maximum matches to return.",
                             ],
                         ],
-                        "required": ["query"],
+                        "required": ["query", "path_prefix", "max_results"],
                         "additionalProperties": false,
                     ],
                 ],
@@ -139,31 +148,31 @@ struct CodebaseAgentToolbox: Sendable {
         switch toolName {
         case "get_git_diff":
             return getGitDiff(
-                path: object["path"] as? String,
+                path: nullableString(object["path"]),
                 maxCharacters: clampedInt(object["max_chars"], defaultValue: 24_000, min: 4_000, max: 60_000)
             )
         case "list_files":
             return listFiles(
-                query: object["query"] as? String,
+                query: nullableString(object["query"]),
                 limit: clampedInt(object["limit"], defaultValue: 160, min: 20, max: 500)
             )
         case "read_file":
-            guard let path = object["path"] as? String else {
+            guard let path = nullableString(object["path"]) else {
                 return "Missing required argument: path."
             }
             return readFile(
                 path: path,
-                startLine: object["start_line"] as? Int,
-                endLine: object["end_line"] as? Int,
+                startLine: nullableInt(object["start_line"]),
+                endLine: nullableInt(object["end_line"]),
                 maxCharacters: clampedInt(object["max_chars"], defaultValue: 18_000, min: 2_000, max: 50_000)
             )
         case "search_text":
-            guard let query = object["query"] as? String else {
+            guard let query = nullableString(object["query"]) else {
                 return "Missing required argument: query."
             }
             return searchText(
                 query: query,
-                pathPrefix: object["path_prefix"] as? String,
+                pathPrefix: nullableString(object["path_prefix"]),
                 maxResults: clampedInt(object["max_results"], defaultValue: 60, min: 10, max: 200)
             )
         default:
@@ -175,17 +184,17 @@ struct CodebaseAgentToolbox: Sendable {
         let object = (try? JSONSerialization.jsonObject(with: Data(arguments.utf8))) as? [String: Any] ?? [:]
         switch toolName {
         case "get_git_diff":
-            if let path = object["path"] as? String, !path.isEmpty {
+            if let path = nullableString(object["path"]), !path.isEmpty {
                 return "Inspecting diff for \(lastPathComponent(path))"
             }
             return "Inspecting git diff"
         case "list_files":
             return "Listing project files"
         case "read_file":
-            let path = (object["path"] as? String).map(lastPathComponent) ?? "that file"
+            let path = nullableString(object["path"]).map(lastPathComponent) ?? "that file"
             return "Reading \(path)"
         case "search_text":
-            if let query = object["query"] as? String, !query.isEmpty {
+            if let query = nullableString(object["query"]), !query.isEmpty {
                 return "Searching for \(searchTermLabel(query))"
             }
             return "Searching the codebase"
@@ -362,9 +371,13 @@ struct CodebaseAgentToolbox: Sendable {
     }
 
     private func fileInventory() -> [String] {
+        fileInventoryCache
+    }
+
+    private static func buildFileInventory(rootURL: URL) -> [String] {
         let resourceKeys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(
-            at: resolvedRootURL,
+            at: rootURL,
             includingPropertiesForKeys: Array(resourceKeys),
             options: [.skipsPackageDescendants]
         ) else {
@@ -384,7 +397,7 @@ struct CodebaseAgentToolbox: Sendable {
 
             guard values.isRegularFile == true,
                   isContextCandidate(url: url),
-                  let path = relativePath(for: url) else {
+                  let path = relativePath(for: url, rootURL: rootURL) else {
                 continue
             }
             paths.append(path)
@@ -406,14 +419,18 @@ struct CodebaseAgentToolbox: Sendable {
     }
 
     private func relativePath(for url: URL) -> String? {
+        Self.relativePath(for: url, rootURL: resolvedRootURL)
+    }
+
+    private static func relativePath(for url: URL, rootURL: URL) -> String? {
         let filePath = url.standardizedFileURL.resolvingSymlinksInPath().path
-        let rootPath = resolvedRootURL.path
+        let rootPath = rootURL.path
         guard filePath == rootPath || filePath.hasPrefix(rootPath + "/") else { return nil }
         if filePath == rootPath { return "." }
         return String(filePath.dropFirst(rootPath.count + 1))
     }
 
-    private func isContextCandidate(url: URL) -> Bool {
+    private static func isContextCandidate(url: URL) -> Bool {
         let name = url.lastPathComponent
         if Self.importantNames.contains(name) { return true }
         let ext = url.pathExtension.lowercased()
@@ -435,8 +452,22 @@ struct CodebaseAgentToolbox: Sendable {
     }
 
     private func clampedInt(_ value: Any?, defaultValue: Int, min: Int, max: Int) -> Int {
-        let intValue = value as? Int ?? defaultValue
+        let intValue = nullableInt(value) ?? defaultValue
         return Swift.max(min, Swift.min(max, intValue))
+    }
+
+    private func nullableString(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func nullableInt(_ value: Any?) -> Int? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        return nil
     }
 
     private func clip(_ text: String, maxCharacters: Int) -> String {

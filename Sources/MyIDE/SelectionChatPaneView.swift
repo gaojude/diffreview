@@ -4,6 +4,7 @@ import SwiftUI
 struct SelectionChatPaneView: View {
     @ObservedObject var chat: SelectionChatController
     let fontSize: CGFloat
+    var onCaptureFix: (AgentFixProposal, PromptFixSnapshot) -> PromptFixItem? = { _, _ in nil }
     @FocusState private var isComposerFocused: Bool
 
     private let bottomID = "selection-chat-bottom"
@@ -48,14 +49,52 @@ struct SelectionChatPaneView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 8)
-            if hasTranscript || !chat.draft.isEmpty {
+            Button {
+                chat.newChat()
+            } label: {
+                Image(systemName: "plus.bubble")
+            }
+            .buttonStyle(.borderless)
+            .disabled(chat.isBusy)
+            .help("New chat")
+
+            Menu {
+                ForEach(chat.threads) { thread in
+                    Button {
+                        chat.selectThread(thread.id)
+                    } label: {
+                        if thread.id == chat.selectedThreadID {
+                            Label(thread.title, systemImage: "checkmark")
+                        } else {
+                            Text(thread.title)
+                        }
+                    }
+                    .disabled(chat.isBusy)
+                }
+            } label: {
+                Image(systemName: "list.bullet")
+            }
+            .menuStyle(.borderlessButton)
+            .disabled(chat.threads.isEmpty || chat.isBusy)
+            .help("Switch chat")
+
+            if chat.canCaptureFix {
                 Button {
-                    chat.clearTranscript()
+                    captureFix()
+                } label: {
+                    Image(systemName: "plus.rectangle.on.rectangle")
+                }
+                .buttonStyle(.borderless)
+                .help("Add to Fixes")
+            }
+            if chat.canDeleteCurrentThread {
+                Button {
+                    chat.deleteCurrentThread()
                 } label: {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("Clear chat")
+                .help("Delete current chat")
             }
         }
         .padding(.horizontal, 14)
@@ -65,22 +104,22 @@ struct SelectionChatPaneView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if !chat.submittedQuestion.isEmpty {
-                        UserQuestionBubble(text: chat.submittedQuestion, fontSize: fontSize)
-                    }
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(chat.exchanges) { exchange in
+                        UserQuestionBubble(text: exchange.question, fontSize: fontSize)
 
-                    if chat.isBusy {
-                        AgentProgressCard(
-                            activity: chat.currentActivity,
-                            toolEvents: chat.toolEvents,
-                            fontSize: fontSize
-                        )
-                    }
+                        if chat.isBusy && chat.activeExchangeID == exchange.id {
+                            AgentProgressCard(
+                                activity: chat.currentActivity,
+                                toolEvents: chat.toolEvents,
+                                fontSize: fontSize
+                            )
+                        }
 
-                    if !chat.answer.isEmpty {
-                        AssistantAnswerBlock(text: chat.answer, fontSize: fontSize) { reference in
-                            chat.openCodeReference(reference)
+                        if !exchange.answer.isEmpty {
+                            AssistantAnswerBlock(text: exchange.answer, fontSize: fontSize) { reference in
+                                chat.openCodeReference(reference)
+                            }
                         }
                     }
 
@@ -92,13 +131,7 @@ struct SelectionChatPaneView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor).opacity(0.42))
-            .onChange(of: chat.answer) { _, _ in
-                scrollToBottom(proxy)
-            }
-            .onChange(of: chat.toolEvents) { _, _ in
-                scrollToBottom(proxy)
-            }
-            .onChange(of: chat.submittedQuestion) { _, _ in
+            .onChange(of: chat.scrollRevision) { _, _ in
                 scrollToBottom(proxy)
             }
         }
@@ -135,7 +168,7 @@ struct SelectionChatPaneView: View {
                 .disabled(chat.isBusy || !chat.hasContext)
                 .submitLabel(.send)
                 .onSubmit {
-                    chat.submit()
+                    submit()
                 }
                 .accessibilityIdentifier("selection-chat-input")
 
@@ -150,7 +183,7 @@ struct SelectionChatPaneView: View {
                 .help("Stop")
             } else {
                 Button {
-                    chat.submit()
+                    submit()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .frame(width: 18, height: 18)
@@ -165,7 +198,19 @@ struct SelectionChatPaneView: View {
     }
 
     private var hasTranscript: Bool {
-        !chat.submittedQuestion.isEmpty || !chat.answer.isEmpty || chat.isBusy
+        !chat.exchanges.isEmpty || chat.isBusy
+    }
+
+    private func submit() {
+        chat.submit { proposal, snapshot in
+            onCaptureFix(proposal, snapshot)
+        }
+    }
+
+    private func captureFix() {
+        chat.requestFixCapture { proposal, snapshot in
+            onCaptureFix(proposal, snapshot)
+        }
     }
 
     private func focusComposer() {
@@ -176,9 +221,7 @@ struct SelectionChatPaneView: View {
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.16)) {
-                proxy.scrollTo(bottomID, anchor: .bottom)
-            }
+            proxy.scrollTo(bottomID, anchor: .bottom)
         }
     }
 

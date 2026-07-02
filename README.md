@@ -19,6 +19,9 @@ thin `my-ide` command — like `code .`, but native.
   replace the main code pane with that source file/range. The selection anchors a read-only local
   agent loop: the model must inspect the Git diff first, then can call local tools for
   full-codebase file listing, file reads, and text search as needed.
+- **Prompt fix accumulator** — capture read-only chat conclusions as fix prompts. The Fixes tab
+  keeps a selectable list of handoff prompts with code location, selected context, requested
+  change, and recent chat summary, then copies the selected prompts to the clipboard.
 - **Native UX** — `NavigationSplitView` sidebar/detail, standard resize/collapse, dark mode,
   keyboard navigation, and window focus when launched from a terminal.
 - **Liquid Glass** — the sidebar, toolbar, and window chrome adopt macOS 26's Liquid Glass
@@ -61,9 +64,20 @@ Click repo-relative references such as `packages/app/page.tsx:24-31` in chat or 
 load that file in the code pane and highlight the cited lines. You can then select code in that
 newly loaded file and continue asking questions from the same chat pane.
 
+When a chat turn becomes an implementation request, the app stays read-only and captures a
+paste-ready prompt instead. Use the Chat/Fixes tabs in the right pane to review accumulated fixes,
+select one or more prompts, and copy them to a coding agent.
+
 ```sh
 export AI_GATEWAY_API_KEY=...          # preferred: routes through Vercel AI Gateway
 export AI_GATEWAY_MODEL=openai/gpt-5.5 # optional; this is the Gateway default
+
+# Anthropic/Claude through Vercel AI Gateway also works:
+# export ANTHROPIC_BASE_URL=https://ai-gateway.vercel.sh
+# export ANTHROPIC_AUTH_TOKEN=...
+# export ANTHROPIC_MODEL=anthropic/claude-opus-4.8
+# Note: the OpenAI-compatible Gateway route rejected `anthropic/claude-opus-4-8[1m]`
+# in live testing; use `anthropic/claude-opus-4.8` here.
 
 # Direct OpenAI also works:
 # export OPENAI_API_KEY=sk-...
@@ -87,6 +101,8 @@ just the toolchain:
 ```sh
 ./scripts/selftest.sh    # pure-logic assertions (Git changes, sort, binary sniff, path resolution)
 ./scripts/selection-chat-ui-test.sh # native pane layout harness for selection chat
+./scripts/selection-chat-agent-test.sh # mock AI server for streaming, tools, fixes, persistence
+./scripts/selection-chat-claude-live-test.sh # live Claude/Vercel AI Gateway agent loop
 ./scripts/e2e.sh         # self-test → build → launch on a fixture → assert window via a11y → screenshot
 ```
 

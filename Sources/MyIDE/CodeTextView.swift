@@ -3,12 +3,12 @@ import AppKit
 import MyIDECore
 import Highlighter
 
-enum CodeContentKind: Equatable, Sendable {
+enum CodeContentKind: String, Codable, Equatable, Sendable {
     case source
     case diff
 }
 
-struct CodeSelectionContext: Equatable, Sendable {
+struct CodeSelectionContext: Codable, Equatable, Sendable {
     let fileURL: URL?
     let contentKind: CodeContentKind
     let startLine: Int
