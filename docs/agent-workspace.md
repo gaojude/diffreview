@@ -304,7 +304,8 @@ Behaviors:
   `canSaveAutomation`, `input`. Actions: `connect()` (locate node+script — collect candidates
   from env `MYIDE_HARNESS_DIR`, bundle Resources, and walk-up, preferring one with the Agent
   SDK installed next to it, since the bundle ships a lean mock-only copy; `MYIDE_AGENT_MOCK=1`
-  or missing SDK → mock args with the bundled scenario), `sendPrompt()`,
+  or missing SDK → mock args with the bundled scenario; env `MYIDE_ASSISTANT_PROMPT` sends
+  itself as the first user message once connected — scripted/no-typing entry), `sendPrompt()`,
   `runAutomation(_:)` (no harness needed — steps through `AutomationReplay` with ~350 ms
   `Task.sleep` between steps, updating progress + highlight), `saveRecording(name:summary:)`,
   `deleteAutomation(_:)`, `stop()`. Harness `tool_use` → `engine.execute` → transcript line

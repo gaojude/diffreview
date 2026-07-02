@@ -129,6 +129,13 @@ final class AgentWorkspaceController: ObservableObject {
             appendStatus(useMock
                 ? "Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim” — or run a saved automation on the left."
                 : "Hi! Tell me what you'd like me to do in the browser, or run a saved automation on the left.")
+            // Scripted entry point: launch with a goal and the session starts
+            // itself — no typing needed (demos, tests, "open and go" shortcuts).
+            if let kickoff = environment["MYIDE_ASSISTANT_PROMPT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !kickoff.isEmpty {
+                input = kickoff
+                sendPrompt()
+            }
         case .failed(let message):
             phase = .offline(message)
             appendStatus("I couldn't start my helper: \(message)")
