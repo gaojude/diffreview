@@ -108,9 +108,7 @@ final class AgentWorkspaceController: ObservableObject {
         }
 
         let harnessDirectory = script.deletingLastPathComponent()
-        let sdkPath = harnessDirectory.appendingPathComponent("node_modules/@anthropic-ai/claude-agent-sdk").path
-        let sdkInstalled = FileManager.default.fileExists(atPath: sdkPath)
-        let useMock = environment["MYIDE_AGENT_MOCK"] == "1" || !sdkInstalled
+        let useMock = environment["MYIDE_AGENT_MOCK"] == "1" || !Self.isLiveCapable(script)
 
         var arguments: [String] = []
         if useMock {
@@ -137,11 +135,16 @@ final class AgentWorkspaceController: ObservableObject {
         }
     }
 
+    /// Gathers every harness copy in sight and prefers a live-capable one (SDK
+    /// installed next to it). The bundle ships a lean copy without node_modules
+    /// for demo mode; a repo checkout where the user ran `npm install` should
+    /// win over it so "install once, get live sessions" holds from any launch.
     private func locateHarnessScript(environment: [String: String]) -> URL? {
+        var candidates: [URL] = []
         if let override = environment["MYIDE_HARNESS_DIR"] {
             let candidate = URL(fileURLWithPath: override, isDirectory: true).appendingPathComponent("agent-harness.mjs")
             if FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
+                candidates.append(candidate.standardizedFileURL)
             }
         }
         var starts: [URL] = []
@@ -150,7 +153,19 @@ final class AgentWorkspaceController: ObservableObject {
         }
         starts.append(Bundle.main.bundleURL)
         starts.append(URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
-        return AgentHarnessLocator.findHarnessScript(startingFrom: starts)
+        for start in starts {
+            if let found = AgentHarnessLocator.findHarnessScript(startingFrom: [start]),
+               !candidates.contains(found.standardizedFileURL) {
+                candidates.append(found.standardizedFileURL)
+            }
+        }
+        return candidates.first(where: Self.isLiveCapable) ?? candidates.first
+    }
+
+    private static func isLiveCapable(_ script: URL) -> Bool {
+        let sdk = script.deletingLastPathComponent()
+            .appendingPathComponent("node_modules/@anthropic-ai/claude-agent-sdk")
+        return FileManager.default.fileExists(atPath: sdk.path)
     }
 
     func stop() {

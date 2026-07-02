@@ -301,8 +301,9 @@ Behaviors:
   Published: `transcript: [TranscriptEntry]` (`enum Kind { user, assistant, tool, status }`,
   text, ok flag for tool lines), `page: BrowserPage?`, `lastActedElementID`, `automations`,
   `phase` (`ready/working/replaying(step:of:)/offline`), `mode` (`mock/live/none`),
-  `canSaveAutomation`, `input`. Actions: `connect()` (locate node+script — env
-  `MYIDE_HARNESS_DIR` override, then bundle Resources, then walk-up; `MYIDE_AGENT_MOCK=1`
+  `canSaveAutomation`, `input`. Actions: `connect()` (locate node+script — collect candidates
+  from env `MYIDE_HARNESS_DIR`, bundle Resources, and walk-up, preferring one with the Agent
+  SDK installed next to it, since the bundle ships a lean mock-only copy; `MYIDE_AGENT_MOCK=1`
   or missing SDK → mock args with the bundled scenario), `sendPrompt()`,
   `runAutomation(_:)` (no harness needed — steps through `AutomationReplay` with ~350 ms
   `Task.sleep` between steps, updating progress + highlight), `saveRecording(name:summary:)`,
