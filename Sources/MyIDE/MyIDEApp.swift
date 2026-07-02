@@ -20,12 +20,22 @@ struct MyIDEApp: App {
         if CommandLine.arguments.contains("--selection-chat-agent-live-test") {
             Self.runSelectionChatAgentLiveTestAndExit()
         }
+        if CommandLine.arguments.contains("--agent-workspace-self-test") {
+            AgentWorkspaceSelfTest.run()
+        }
 
         let rootURL = Self.rootURL()
         let appState = AppState(rootURL: rootURL)
         _appState = StateObject(wrappedValue: appState)
+        // `--assistant` launches straight into the agent workspace with no IDE window —
+        // the whole point of that flag is a non-technical entry into saved automations.
+        let assistantOnly = CommandLine.arguments.contains("--assistant")
         DispatchQueue.main.async {
-            ProjectWindowController.shared.openProjectWindowIfNeeded(rootURL: rootURL, appState: appState)
+            if assistantOnly {
+                AgentWorkspaceWindowController.shared.openAgentWorkspace()
+            } else {
+                ProjectWindowController.shared.openProjectWindowIfNeeded(rootURL: rootURL, appState: appState)
+            }
         }
     }
 
@@ -44,6 +54,13 @@ struct MyIDEApp: App {
                     .keyboardShortcut("-", modifiers: .command)
                 Button("Actual Size") { appState.resetFontSize() }
                     .keyboardShortcut("0", modifiers: .command)
+            }
+
+            CommandMenu("Assistant") {
+                Button("Open Assistant") {
+                    AgentWorkspaceWindowController.shared.openAgentWorkspace()
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
             }
         }
     }

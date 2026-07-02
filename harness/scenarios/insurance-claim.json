@@ -1,0 +1,45 @@
+{
+  "name": "Submit a massage claim on Maple Life",
+  "turns": [
+    {
+      "emit": [
+        { "text": "Happy to help! I'll take your massage claim through the Maple Life portal — you can just watch. Opening the portal now." },
+        { "tool": "open https://portal.maplelife.example/login" },
+        { "tool": "snapshot" },
+        { "text": "Here's the sign-in page. It's a demo portal, so I'll sign in as jude." },
+        { "tool": "fill \"Username\" \"jude\"" },
+        { "tool": "fill \"Password\" \"demo\"" },
+        { "tool": "click \"Sign in\"" },
+        { "tool": "snapshot" },
+        { "text": "We're in — this is your benefits overview. Let's start a new claim." },
+        { "tool": "click \"Make a claim\"" },
+        { "tool": "snapshot" },
+        { "text": "First question: who is the claim for? This dropdown is one of those custom ones that only listens to arrow keys, so I'll open it and pick you." },
+        { "tool": "click \"Claim for\"" },
+        { "tool": "press \"Claim for\" ArrowDown" },
+        { "tool": "press \"Claim for\" Enter" },
+        { "tool": "click \"Continue\"" },
+        { "tool": "snapshot" },
+        { "text": "Now it wants the kind of care you received. I'll choose \"Massage therapist\"." },
+        { "tool": "click \"Massage therapist\"" },
+        { "text": "Hm — the click didn't take. These custom radio buttons ignore clicks and want a keyboard press instead; it's a classic portal quirk. Let me focus it and press Space." },
+        { "tool": "press \"Massage therapist\" Space" },
+        { "tool": "click \"Continue\"" },
+        { "tool": "snapshot" },
+        { "text": "Time for the expense details from your receipt: June 14, 2026, a follow-up visit, $84.50." },
+        { "tool": "fill \"Service date (YYYY-MM-DD)\" \"2026-06-14\"" },
+        { "tool": "press \"Visit type\" ArrowDown" },
+        { "tool": "press \"Visit type\" ArrowDown" },
+        { "tool": "press \"Visit type\" Enter" },
+        { "tool": "fill \"Amount\" \"84.50\"" },
+        { "tool": "click \"Add expense\"" },
+        { "tool": "click \"Continue\"" },
+        { "tool": "snapshot" },
+        { "text": "One last look at the review page — claim for Jude Gao, massage therapy, one expense, total $84.50. Everything matches your receipt, so I'll submit it." },
+        { "tool": "click \"Submit claim\"" },
+        { "tool": "snapshot" },
+        { "text": "All done! Your $84.50 massage claim was submitted successfully — Maple Life says you'll hear back within 2 business days. Tip: save this session as an automation and next time it's a single click." }
+      ]
+    }
+  ]
+}

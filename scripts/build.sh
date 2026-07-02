@@ -20,6 +20,11 @@ mkdir -p "$MACOS" "$RESOURCES"
 cp "$BIN_DIR/MyIDE" "$MACOS/MyIDE"
 find "$BIN_DIR" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
 
+# The agent harness (node sidecar + demo scenario) ships inside the bundle so the
+# Assistant window works from a Finder launch, not just from a repo checkout.
+cp -R "$ROOT/harness" "$RESOURCES/harness"
+rm -rf "$RESOURCES/harness/node_modules"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

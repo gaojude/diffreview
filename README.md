@@ -28,6 +28,15 @@ thin `my-ide` command — like `code .`, but native.
   automatically; the content pane adds a floating glass header bar, a glass "Reveal in Finder"
   button (`GlassEffectContainer` + `.glassEffect`/`.buttonStyle(.glass)`), and glass placeholder
   cards, with code scrolling translucently underneath the header.
+- **Assistant workspace** (⇧⌘A, or launch with `--assistant`) — a terminal pane showing a
+  Claude session beside a live browser pane the agent operates on, plus one-click
+  **automations**: every browser action the agent takes is recorded and can be saved as a
+  replayable script with a generated `SKILL.md` playbook. The browser mimics the
+  `agent-browser` CLI's API design (`@eN` refs, snapshots, stale-ref semantics) against a
+  deterministic demo insurance portal, so demo mode works offline with no API key or npm
+  install. For live Claude sessions (via the Claude Agent SDK), run `cd harness && npm install`
+  once and reopen the Assistant. Design notes: `docs/agent-workspace.md`; end-to-end check:
+  `./scripts/agent-workspace-test.sh`.
 
 ## Requirements
 

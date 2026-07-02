@@ -290,6 +290,8 @@ do {
     }
 }
 
+runAgentWorkspaceChecks()
+
 print("")
 if failures == 0 {
     print("PASS — all self-tests passed")

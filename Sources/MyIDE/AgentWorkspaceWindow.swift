@@ -1,0 +1,56 @@
+import AppKit
+import SwiftUI
+
+/// Creates and reveals the Assistant window, mirroring `ProjectWindowController`:
+/// the app's SwiftUI scene is deliberately inert, so windows are managed with
+/// AppKit directly. One workspace (and one harness session) per app run.
+@MainActor
+final class AgentWorkspaceWindowController: NSObject, NSWindowDelegate {
+    static let shared = AgentWorkspaceWindowController()
+
+    private var window: NSWindow?
+    private var workspaceController: AgentWorkspaceController?
+
+    func openAgentWorkspace() {
+        if let window {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let controller = AgentWorkspaceController()
+        let content = AgentWorkspaceView(controller: controller)
+            .frame(minWidth: 980, minHeight: 560)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Assistant"
+        window.minSize = NSSize(width: 980, height: 560)
+        window.toolbarStyle = .unified
+        window.contentViewController = NSHostingController(rootView: content)
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+
+        self.window = window
+        self.workspaceController = controller
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        // Shut the harness down with the window; a fresh open gets a fresh session.
+        workspaceController?.stop()
+        workspaceController = nil
+        window = nil
+    }
+}
