@@ -231,7 +231,44 @@ const SYSTEM_PROMPT = [
   '  so someone watching the session can follow along.',
 ].join('\n');
 
-async function runLive() {
+// Real mode (--real): the tool executes the actual agent-browser CLI against
+// headed Chrome on real websites, so the grammar is the real CLI's.
+const REAL_TOOL_DESCRIPTION =
+  'Execute one agent-browser CLI command against a REAL Chrome browser the user can see. ' +
+  'Core commands: open <url> · snapshot -i (interactive elements with @eN refs; always -i) · ' +
+  'click/dblclick/hover/focus @eN · fill @eN <text> (clears first) · type @eN <text> · ' +
+  'press <Key> (acts on current focus, e.g. press Enter — focus @eN first) · ' +
+  'check/uncheck @eN · select @eN <value> · scroll down 500 · scrollintoview @eN · ' +
+  'find text "Sign In" click / find label "Email" fill <text> / find role button click --name "Submit" (semantic locators, no snapshot needed) · ' +
+  'get text|value|attr|title|url · wait @eN | wait --text "..." | wait --url "**/path" | wait --load networkidle · screenshot <file.png>. ' +
+  'One command per call; the output is returned.';
+
+const REAL_SYSTEM_PROMPT = [
+  'You are operating a REAL Chrome browser on real websites for a non-technical',
+  'user, through a single tool: agent_browser. Each call runs one agent-browser',
+  'CLI command and returns its output. The user watches the Chrome window.',
+  '',
+  'Workflow rules:',
+  '- snapshot -i first to see the page; act on its @eN refs. Refs go stale after',
+  '  anything changes the page — re-snapshot before reusing refs.',
+  '- After any navigation or page-changing action, wait properly before the next',
+  '  step: wait --load networkidle, wait --text "...", or wait --url "**/path".',
+  '  Never assume the page is ready.',
+  '- press acts on the current focus: focus @eN first, then press Enter (or use',
+  '  fill, which commits text directly).',
+  '- Prefer find text/label/role commands when repeating a known flow — they',
+  '  survive re-renders and make recordings replayable.',
+  '- NEVER enter usernames, passwords, or 2FA codes. If a page needs a sign-in,',
+  '  tell the user to log in by hand in the Chrome window, then wait for them',
+  '  (wait --url or wait --text on something only visible after login).',
+  '- Be conservative on real sites: no purchases, no deletions, no posting, and',
+  '  no form submissions with real-world consequences unless the user explicitly',
+  '  asked for exactly that.',
+  '- Narrate what you are doing in short, warm, plain English between tool calls',
+  '  so someone watching can follow along.',
+].join('\n');
+
+async function runLive(realBrowser) {
   let sdk;
   let z;
   try {
@@ -303,7 +340,7 @@ async function runLive() {
       tools: [
         sdk.tool(
           'agent_browser',
-          TOOL_DESCRIPTION,
+          realBrowser ? REAL_TOOL_DESCRIPTION : TOOL_DESCRIPTION,
           { command: z.string() },
           async (args) => {
             // Round-trip through the app, which executes the command on the
@@ -323,7 +360,7 @@ async function runLive() {
         allowedTools: ['mcp__browser__agent_browser'],
         permissionMode: 'bypassPermissions',
         maxTurns: 50,
-        systemPrompt: SYSTEM_PROMPT,
+        systemPrompt: realBrowser ? REAL_SYSTEM_PROMPT : SYSTEM_PROMPT,
       },
     });
 
@@ -359,6 +396,7 @@ function parseArgs(argv) {
   let mockRequested = false;
   let mockPath = null;
   let delayMs = 150;
+  let realBrowser = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--mock') {
@@ -369,15 +407,19 @@ function parseArgs(argv) {
       const parsed = Number(argv[i + 1]);
       if (Number.isFinite(parsed) && parsed >= 0) delayMs = parsed;
       i += 1;
+    } else if (arg === '--real') {
+      // The app executes commands against the real agent-browser CLI; teach
+      // the model the real grammar and real-web ground rules.
+      realBrowser = true;
     } else {
       diag(`ignoring unknown argument: ${arg}`);
     }
   }
-  return { mockRequested, mockPath, delayMs };
+  return { mockRequested, mockPath, delayMs, realBrowser };
 }
 
 function main() {
-  const { mockRequested, mockPath, delayMs } = parseArgs(process.argv.slice(2));
+  const { mockRequested, mockPath, delayMs, realBrowser } = parseArgs(process.argv.slice(2));
   if (mockRequested) {
     if (!mockPath) {
       emit({ type: 'fatal', message: 'The --mock flag needs a scenario path, like: --mock scenarios/insurance-claim.json' });
@@ -386,7 +428,7 @@ function main() {
     }
     runMock(mockPath, delayMs);
   } else {
-    runLive().catch((err) => {
+    runLive(realBrowser).catch((err) => {
       diag(`unexpected live-mode failure: ${err && err.stack ? err.stack : String(err)}`);
       emit({
         type: 'fatal',

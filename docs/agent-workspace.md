@@ -83,6 +83,29 @@ combobox options only). Successful element-targeted commands also return a
 `canonicalCommand` in label form (`click "Sign in"`) — that is what the recorder stores,
 which is why replays survive ref renumbering.
 
+## Real browser mode
+
+When the real `agent-browser` CLI is installed (found by `AgentHarnessLocator.
+findAgentBrowserCLI`, same search paths as node) and the session is live,
+`AgentWorkspaceController` routes every `tool_use` to `RealAgentBrowser`
+(MyIDECore) instead of the mock engine: each command shells out to
+`agent-browser --session myide-assistant …` against **headed Chrome on real
+websites** (`--headed` is forced onto `open`). The harness gets `--real`, which
+swaps in a tool description + system prompt teaching the real CLI grammar
+(`snapshot -i`, `press` acts on focus, `find text/label/role` locators, proper
+`wait` variants) plus real-web ground rules (never type credentials — the user
+signs in by hand in the visible Chrome window; no consequential submissions
+unless explicitly asked). Command execution happens on the harness client's
+serial delivery queue (CLI calls block for seconds); only UI bookkeeping hops
+to the main actor. The browser pane becomes a live action feed — Chrome itself
+is the display. Recording: `RealAgentBrowser` indexes each snapshot
+(`RealSnapshotIndex`) so `@eN` commands canonicalize to replay-stable
+`find text|label "…" <verb>` forms, and real recordings keep their `wait`
+commands (`AutomationRecorder.realBrowserReadOnlyVerbs`). Credential/lifecycle
+verbs (`auth`, `install`, `plugin`, `mcp`, `skills`, `daemon`) are refused.
+Opt out with `MYIDE_REAL_BROWSER=0`; the simulated portal remains the offline
+demo and the self-test path.
+
 ## MyIDECore public API (exact contracts)
 
 `Sources/MyIDECore/AgentBrowser.swift` — engine, command parsing, snapshot rendering:

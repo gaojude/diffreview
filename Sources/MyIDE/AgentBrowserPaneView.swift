@@ -41,7 +41,9 @@ struct AgentBrowserPaneView: View {
                 Circle().fill(Color(red: 0.99, green: 0.74, blue: 0.18)).frame(width: 10, height: 10)
                 Circle().fill(Color(red: 0.22, green: 0.78, blue: 0.25)).frame(width: 10, height: 10)
             }
-            Text(controller.page?.url ?? "about:blank")
+            Text(controller.browserIsReal
+                ? (controller.currentRealURL ?? "real Chrome — no page yet")
+                : (controller.page?.url ?? "about:blank"))
                 .font(.caption.monospaced())
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -59,7 +61,9 @@ struct AgentBrowserPaneView: View {
 
     @ViewBuilder
     private var pageBody: some View {
-        if let page = controller.page {
+        if controller.browserIsReal {
+            realSessionCard
+        } else if let page = controller.page {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(Array(page.elements.enumerated()), id: \.offset) { _, element in
@@ -90,6 +94,45 @@ struct AgentBrowserPaneView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(24)
         }
+    }
+
+    /// Real-Chrome sessions: the browser is an actual window on screen, so
+    /// this pane becomes the live action feed instead of a rendered page.
+    private var realSessionCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "macwindow.on.rectangle")
+                .font(.system(size: 34))
+                .foregroundStyle(Color.accentColor)
+            Text("Real Chrome session")
+                .font(.headline)
+            Text("The assistant is driving an actual Chrome window — watch it work there. If a site asks for a password, you type it in Chrome yourself.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            if let action = controller.lastRealAction {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if controller.isExecutingCommand {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                        Text(controller.isExecutingCommand ? "Running" : "Last action")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(action)
+                        .font(.caption.monospaced())
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder

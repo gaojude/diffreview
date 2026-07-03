@@ -210,6 +210,31 @@ public enum AgentHarnessLocator {
             .map { $0.appendingPathComponent("bin", isDirectory: true) }
     }
 
+    /// Finds the real `agent-browser` CLI, searching the same locations as
+    /// `findNode` — its presence is what unlocks real-Chrome sessions.
+    public static func findAgentBrowserCLI(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        let fileManager = FileManager.default
+        var candidates: [URL] = []
+        if let path = environment["PATH"] {
+            candidates += path.split(separator: ":").map { URL(fileURLWithPath: String($0), isDirectory: true) }
+        }
+        let home = fileManager.homeDirectoryForCurrentUser
+        candidates += [
+            URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
+            URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
+            home.appendingPathComponent(".volta/bin", isDirectory: true),
+        ]
+        candidates += versionedBinDirectories(under: home.appendingPathComponent(".nvm/versions/node", isDirectory: true))
+        candidates += versionedBinDirectories(under: home.appendingPathComponent(".local", isDirectory: true))
+        for directory in candidates {
+            let cli = directory.appendingPathComponent("agent-browser")
+            if fileManager.isExecutableFile(atPath: cli.path) {
+                return cli
+            }
+        }
+        return nil
+    }
+
     /// Walks up from each starting directory (≤ 12 levels) looking for
     /// `harness/agent-harness.mjs` — finds the sidecar whether the app runs
     /// from a repo checkout or from inside the built bundle's Resources.

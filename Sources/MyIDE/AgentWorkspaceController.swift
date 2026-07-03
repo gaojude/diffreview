@@ -47,11 +47,20 @@ final class AgentWorkspaceController: ObservableObject {
     @Published private(set) var canSaveAutomation = false
     @Published var input = ""
 
+    /// Real-Chrome session state (browserIsReal == true): the browser is an
+    /// actual Chrome window, so the pane shows a live action feed instead of a
+    /// rendered page.
+    @Published private(set) var browserIsReal = false
+    @Published private(set) var lastRealAction: String?
+    @Published private(set) var currentRealURL: String?
+    @Published private(set) var isExecutingCommand = false
+
     private let portal = MapleLifePortal()
     private let engine: AgentBrowserEngine
-    private let recorder = AutomationRecorder()
+    private var recorder = AutomationRecorder()
     private let store: AutomationStore
     private let client = AgentHarnessClient()
+    private var realBrowser: RealAgentBrowser?
     private var lastAssistantText: String?
     private var replayTask: Task<Void, Never>?
 
@@ -69,7 +78,9 @@ final class AgentWorkspaceController: ObservableObject {
     var statusText: String {
         switch phase {
         case .connecting: return "Starting up…"
-        case .ready: return mode == .mock ? "Ready — demo mode" : "Ready"
+        case .ready:
+            if mode == .mock { return "Ready — demo mode" }
+            return browserIsReal ? "Ready — real browser" : "Ready"
         case .working: return "Working in the browser…"
         case .replaying(let step, let of): return "Replaying — step \(step) of \(of)"
         case .offline: return "Offline"
@@ -110,12 +121,34 @@ final class AgentWorkspaceController: ObservableObject {
         let harnessDirectory = script.deletingLastPathComponent()
         let useMock = environment["MYIDE_AGENT_MOCK"] == "1" || !Self.isLiveCapable(script)
 
+        // Live sessions get a REAL Chrome browser whenever the agent-browser
+        // CLI is installed; the simulated portal stays as the offline demo.
+        var realExecutor: RealAgentBrowser?
+        if !useMock,
+           environment["MYIDE_REAL_BROWSER"] != "0",
+           let cli = AgentHarnessLocator.findAgentBrowserCLI(environment: environment) {
+            realExecutor = RealAgentBrowser(cliURL: cli)
+        }
+
         var arguments: [String] = []
         if useMock {
             arguments = ["--mock", harnessDirectory.appendingPathComponent("scenarios/insurance-claim.json").path]
+        } else if realExecutor != nil {
+            arguments = ["--real"]
         }
 
+        // Real CLI calls block for seconds, so they run right on the client's
+        // serial delivery queue (keeping commands ordered) instead of the main
+        // actor; only the UI bookkeeping hops to main.
+        let liveClient = client
         client.onMessage = { [weak self] message in
+            if let executor = realExecutor, case .toolUse(let id, let command) = message {
+                Task { @MainActor in self?.noteRealCommandStarted(command) }
+                let result = executor.execute(command)
+                liveClient.send(.toolResult(id: id, ok: result.ok, output: result.output))
+                Task { @MainActor in self?.finishRealCommand(command: command, result: result) }
+                return
+            }
             Task { @MainActor in self?.handle(message) }
         }
         client.onTermination = { [weak self] code in
@@ -124,11 +157,23 @@ final class AgentWorkspaceController: ObservableObject {
 
         switch client.launch(AgentHarnessClient.LaunchSpec(nodeURL: node, scriptURL: script, arguments: arguments)) {
         case .running:
+            realBrowser = realExecutor
+            browserIsReal = realExecutor != nil
+            if realExecutor != nil {
+                // Real recordings keep their waits — replays on live sites
+                // fail without them.
+                recorder = AutomationRecorder(readOnlyVerbs: AutomationRecorder.realBrowserReadOnlyVerbs)
+                recorder.start()
+            }
             mode = useMock ? .mock : .live
             phase = .ready
-            appendStatus(useMock
-                ? "Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim” — or run a saved automation on the left."
-                : "Hi! Tell me what you'd like me to do in the browser, or run a saved automation on the left.")
+            if useMock {
+                appendStatus("Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim” — or run a saved automation on the left.")
+            } else if browserIsReal {
+                appendStatus("Hi! I've got a real Chrome browser. Tell me what to do on the web and watch the window I open — if a site needs your password, I'll hand the keyboard to you.")
+            } else {
+                appendStatus("Hi! Tell me what you'd like me to do in the browser, or run a saved automation on the left.")
+            }
             // Scripted entry point: launch with a goal and the session starts
             // itself — no typing needed (demos, tests, "open and go" shortcuts).
             if let kickoff = environment["MYIDE_ASSISTANT_PROMPT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -178,6 +223,9 @@ final class AgentWorkspaceController: ObservableObject {
     func stop() {
         replayTask?.cancel()
         replayTask = nil
+        if let real = realBrowser {
+            Task.detached { real.closeSession() }
+        }
         client.stop()
     }
 
@@ -197,22 +245,38 @@ final class AgentWorkspaceController: ObservableObject {
     func runAutomation(_ automation: Automation) {
         guard replayTask == nil, !isBusy else { return }
         recorder.stop()
-        engine.reset()
-        appendStatus("Replaying “\(automation.name)” — watch the browser on the right.")
+        let real = realBrowser
+        if real == nil {
+            engine.reset()
+        }
+        appendStatus(real == nil
+            ? "Replaying “\(automation.name)” — watch the browser on the right."
+            : "Replaying “\(automation.name)” — watch the Chrome window.")
         phase = .replaying(step: 0, of: automation.steps.count)
 
         replayTask = Task { [weak self] in
             guard let self else { return }
+            if let real {
+                // Fresh browser session so the recording starts from its `open`.
+                await Task.detached { real.closeSession() }.value
+            }
             var failureMessage: String?
             for (index, step) in automation.steps.enumerated() {
                 if Task.isCancelled { break }
                 self.phase = .replaying(step: index + 1, of: automation.steps.count)
-                let result = self.engine.execute(step.command)
+                let result: AgentBrowserCommandResult
+                if let real {
+                    self.noteRealCommandStarted(step.command)
+                    result = await Task.detached { real.execute(step.command) }.value
+                    self.finishRealCommand(command: step.command, result: result)
+                } else {
+                    result = self.engine.execute(step.command)
+                }
                 if !result.ok {
                     failureMessage = "Step \(index + 1) didn't work anymore: \(result.output)"
                     break
                 }
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                try? await Task.sleep(nanoseconds: real == nil ? 350_000_000 : 120_000_000)
             }
             if let failureMessage {
                 self.appendStatus("I had to stop the replay — \(failureMessage)")
@@ -291,6 +355,25 @@ final class AgentWorkspaceController: ObservableObject {
         }
     }
 
+    // MARK: - Real-browser bookkeeping
+
+    private func noteRealCommandStarted(_ command: String) {
+        isExecutingCommand = true
+        lastRealAction = command
+    }
+
+    private func finishRealCommand(command: String, result: AgentBrowserCommandResult) {
+        isExecutingCommand = false
+        lastRealAction = command
+        recorder.observe(command: command, result: result, note: shortNote())
+        appendToolLine(command: command, result: result)
+        let tokens = command.split(separator: " ").map(String.init)
+        if tokens.first == "open", result.ok, let url = tokens.dropFirst().first(where: { !$0.hasPrefix("-") }) {
+            currentRealURL = url
+        }
+        actionRevision += 1
+    }
+
     // MARK: - Engine events
 
     private func handleEngineEvent(_ event: AgentBrowserEngineEvent) {
@@ -320,7 +403,7 @@ final class AgentWorkspaceController: ObservableObject {
         var detail: String?
         if !result.ok {
             detail = result.output
-        } else if !["snapshot", "screenshot"].contains(verb), result.output.count <= 90 {
+        } else if !["snapshot", "screenshot", "read"].contains(verb), result.output.count <= 90 {
             detail = result.output
         }
         transcript.append(AgentTranscriptEntry(kind: .tool(ok: result.ok), text: "agent-browser \(command)", detail: detail))

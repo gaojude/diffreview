@@ -9,6 +9,7 @@ func runAgentWorkspaceChecks() {
     checkAutomationRecordReplay()
     checkHarnessWire()
     checkLineBuffer()
+    checkRealBrowserSupport()
 }
 
 private let portalBase = "https://portal.maplelife.example"
@@ -281,6 +282,49 @@ private func checkHarnessWire() {
     check(result?["type"] as? String == "tool_result" && result?["id"] as? String == "t7"
           && result?["ok"] as? Bool == true && result?["output"] as? String == "Opened", "encodes tool results")
     check(fields(of: .shutdown)?["type"] as? String == "shutdown", "encodes shutdown")
+}
+
+// MARK: - Real browser support
+
+private func checkRealBrowserSupport() {
+    section("Real agent-browser snapshot index and recorder rules")
+
+    let snapshot = """
+    Home \\ Anthropic
+    - link "Skip to main content" [ref=e1]
+    - heading "This site can't be reached" [level=1, ref=e2]
+    - textbox "Email" [ref=e3]
+    - button "Commitments" [expanded=false, ref=e25]
+    - separator [ref=e9]
+    not a snapshot line
+    """
+    let index = RealSnapshotIndex.parse(snapshot)
+    check(index.entries.count == 5, "indexes every ref line")
+    check(index.entries["e1"] == RealSnapshotIndex.Entry(role: "link", name: "Skip to main content"), "parses role and name")
+    check(index.entries["e25"] == RealSnapshotIndex.Entry(role: "button", name: "Commitments"), "parses refs after other attributes")
+    check(index.entries["e9"]?.name == "", "elements without a name index with an empty name")
+
+    check(index.canonicalCommand(verb: "click", ref: "e25", arguments: []) == "find text \"Commitments\" click",
+          "clicks canonicalize to find text")
+    check(index.canonicalCommand(verb: "fill", ref: "e3", arguments: ["hello world"]) == "find label \"Email\" fill \"hello world\"",
+          "input fills canonicalize to find label with quoted args")
+    check(index.canonicalCommand(verb: "click", ref: "e99", arguments: []) == nil, "unknown refs cannot canonicalize")
+    check(index.canonicalCommand(verb: "click", ref: "e9", arguments: []) == nil, "nameless elements cannot canonicalize")
+
+    // Real recordings keep waits and the wider real-CLI verb set.
+    let recorder = AutomationRecorder(readOnlyVerbs: AutomationRecorder.realBrowserReadOnlyVerbs)
+    recorder.start()
+    let ok = AgentBrowserCommandResult(ok: true, output: "✓")
+    recorder.observe(command: "open --headed https://real.example", result: ok, note: nil)
+    recorder.observe(command: "snapshot -i", result: ok, note: nil)
+    recorder.observe(command: "wait --load networkidle", result: ok, note: nil)
+    recorder.observe(command: "find text \"Sign In\" click", result: ok, note: nil)
+    recorder.observe(command: "get title", result: ok, note: nil)
+    check(recorder.steps.map(\.command) == [
+        "open --headed https://real.example",
+        "wait --load networkidle",
+        "find text \"Sign In\" click",
+    ], "real recordings keep open/wait/find and skip snapshot/get")
 }
 
 // MARK: - Line buffer

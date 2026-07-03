@@ -58,16 +58,22 @@ public struct Automation: Codable, Equatable, Sendable {
 
 /// Observes every command the engine executes during a session and keeps the
 /// ones worth replaying: successful, state-mutating commands in their canonical
-/// label form. Read-only verbs (snapshot/get/wait/sleep/screenshot) and failed
-/// attempts are noise — a replay should be the clean path, not the agent's
-/// trial-and-error.
+/// label form. Read-only verbs and failed attempts are noise — a replay should
+/// be the clean path, not the agent's trial-and-error.
 public final class AutomationRecorder {
     public private(set) var isRecording = false
     public private(set) var steps: [AutomationStep] = []
 
-    private static let mutatingVerbs: Set<String> = ["open", "click", "fill", "type", "press"]
+    /// Observer verbs for the simulated browser (waits are meaningless there).
+    public static let simulatedReadOnlyVerbs: Set<String> = ["snapshot", "get", "wait", "sleep", "screenshot"]
+    /// Real Chrome recordings KEEP `wait` — real replays fail without them.
+    public static let realBrowserReadOnlyVerbs: Set<String> = ["snapshot", "get", "read", "screenshot", "sleep"]
 
-    public init() {}
+    private let readOnlyVerbs: Set<String>
+
+    public init(readOnlyVerbs: Set<String> = AutomationRecorder.simulatedReadOnlyVerbs) {
+        self.readOnlyVerbs = readOnlyVerbs
+    }
 
     public func start() { isRecording = true }
     public func stop() { isRecording = false }
@@ -79,7 +85,7 @@ public final class AutomationRecorder {
     public func observe(command: String, result: AgentBrowserCommandResult, note: String?) {
         guard isRecording, result.ok else { return }
         let verb = command.split(separator: " ").first.map(String.init) ?? ""
-        guard Self.mutatingVerbs.contains(verb) else { return }
+        guard !verb.isEmpty, !readOnlyVerbs.contains(verb) else { return }
         // `open` has no element target, so its typed form is already canonical.
         let stored = result.canonicalCommand ?? command
         steps.append(AutomationStep(command: stored, note: note))

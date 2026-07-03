@@ -31,12 +31,14 @@ thin `my-ide` command — like `code .`, but native.
 - **Assistant workspace** (⇧⌘A, or launch with `--assistant`) — a terminal pane showing a
   Claude session beside a live browser pane the agent operates on, plus one-click
   **automations**: every browser action the agent takes is recorded and can be saved as a
-  replayable script with a generated `SKILL.md` playbook. The browser mimics the
-  `agent-browser` CLI's API design (`@eN` refs, snapshots, stale-ref semantics) against a
-  deterministic demo insurance portal, so demo mode works offline with no API key or npm
-  install. For live Claude sessions (via the Claude Agent SDK), run `cd harness && npm install`
-  once and reopen the Assistant. Design notes: `docs/agent-workspace.md`; end-to-end check:
-  `./scripts/agent-workspace-test.sh`.
+  replayable script with a generated `SKILL.md` playbook. With the Claude Agent SDK
+  installed (`cd harness && npm install`) **and** the real `agent-browser` CLI on the
+  machine, live sessions drive an actual headed Chrome on real websites (the right pane
+  becomes a live action feed, and recordings canonicalize to replay-stable `find` locators).
+  Without them, the workspace falls back to a deterministic demo: a mock browser that
+  mimics the `agent-browser` CLI's API design (`@eN` refs, snapshots, stale-ref semantics)
+  against a fake insurance portal — fully offline, no API key. Design notes:
+  `docs/agent-workspace.md`; end-to-end check: `./scripts/agent-workspace-test.sh`.
 
 ## Requirements
 
