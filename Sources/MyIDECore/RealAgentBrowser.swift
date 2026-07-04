@@ -68,10 +68,26 @@ public struct RealSnapshotIndex: Sendable {
 public final class RealAgentBrowser {
     private let cliURL: URL
     private let sessionID: String
+    /// CDP target ("9222" or a ws:// URL): link the session to the user's own
+    /// running Chrome instead of launching a managed one.
+    private let cdpTarget: String?
+    /// Chrome profile name or path (e.g. "Default"): launch the managed browser
+    /// with the user's real profile so their logins come along.
+    private let chromeProfile: String?
+    private var didConnectCDP = false
+    private var hasSessionFlag = false
     /// One CLI invocation at a time — commands are inherently sequential and
     /// the caller may be a background queue plus a replay task.
     private let lock = NSLock()
     private var snapshotIndex = RealSnapshotIndex()
+
+    /// True once an `open` or CDP attach succeeded — i.e. `get url`/`get title`
+    /// can be asked without triggering the CLI's browser auto-launch.
+    public var hasActiveSession: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasSessionFlag
+    }
 
     /// Command verbs that never make sense from an in-app agent session:
     /// credential and vault management stay with the human, and lifecycle /
@@ -84,9 +100,16 @@ public final class RealAgentBrowser {
         "select", "upload", "scrollintoview",
     ]
 
-    public init(cliURL: URL, sessionID: String = "myide-assistant") {
+    public init(
+        cliURL: URL,
+        sessionID: String = "myide-assistant",
+        cdpTarget: String? = nil,
+        chromeProfile: String? = nil
+    ) {
         self.cliURL = cliURL
         self.sessionID = sessionID
+        self.cdpTarget = cdpTarget
+        self.chromeProfile = chromeProfile
     }
 
     /// Blocking — run off the main thread. Output is capped so a huge page
@@ -106,13 +129,38 @@ public final class RealAgentBrowser {
                 output: "\"\(verb)\" is disabled here. For sign-ins, ask the user to log in manually in the Chrome window, then continue."
             )
         }
-        // The whole point of real mode is a browser the user can watch.
-        if verb == "open", !tokens.contains("--headed"), !tokens.contains("--headless") {
-            tokens.insert("--headed", at: 1)
+
+        // Linked-to-real-Chrome mode: attach over CDP before the first real
+        // command. The user's own browser is already visible, so no --headed,
+        // and close is never forwarded (see closeSession).
+        if let target = cdpTarget {
+            if !didConnectCDP, verb != "connect" {
+                let connect = run(arguments: ["--session", sessionID, "connect", target])
+                guard connect.ok else {
+                    return AgentBrowserCommandResult(
+                        ok: false,
+                        output: "Could not attach to your Chrome at \(target): \(connect.output)\nStart Chrome with remote debugging first: open -a \"Google Chrome\" --args --remote-debugging-port=\(target)"
+                    )
+                }
+                didConnectCDP = true
+                hasSessionFlag = true
+            }
+        } else if verb == "open" {
+            // The whole point of real mode is a browser the user can watch.
+            if !tokens.contains("--headed"), !tokens.contains("--headless") {
+                tokens.insert("--headed", at: 1)
+            }
+            if let profile = chromeProfile, !tokens.contains("--profile") {
+                tokens.append(contentsOf: ["--profile", profile])
+            }
         }
 
         let result = run(arguments: ["--session", sessionID] + tokens)
 
+        if result.ok {
+            if verb == "open" { hasSessionFlag = true }
+            if verb == "close" { hasSessionFlag = false }
+        }
         if verb == "snapshot", result.ok {
             snapshotIndex = RealSnapshotIndex.parse(result.output)
         }
@@ -134,7 +182,10 @@ public final class RealAgentBrowser {
     }
 
     /// Ends the CLI's browser session (used on window close and before replays).
+    /// When attached to the user's OWN Chrome over CDP this is a no-op — we
+    /// never close a browser we didn't launch.
     public func closeSession() {
+        guard cdpTarget == nil else { return }
         _ = execute("close")
     }
 

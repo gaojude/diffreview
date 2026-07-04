@@ -123,11 +123,26 @@ final class AgentWorkspaceController: ObservableObject {
 
         // Live sessions get a REAL Chrome browser whenever the agent-browser
         // CLI is installed; the simulated portal stays as the offline demo.
+        // MYIDE_CHROME_CDP links to the user's own running Chrome over CDP;
+        // MYIDE_CHROME_PROFILE reuses their Chrome profile (logins included).
         var realExecutor: RealAgentBrowser?
+        var linkNote: String?
         if !useMock,
            environment["MYIDE_REAL_BROWSER"] != "0",
            let cli = AgentHarnessLocator.findAgentBrowserCLI(environment: environment) {
-            realExecutor = RealAgentBrowser(cliURL: cli)
+            func setting(_ key: String) -> String? {
+                guard let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty else { return nil }
+                return value
+            }
+            let cdp = setting("MYIDE_CHROME_CDP")
+            let profile = setting("MYIDE_CHROME_PROFILE")
+            realExecutor = RealAgentBrowser(cliURL: cli, cdpTarget: cdp, chromeProfile: profile)
+            if let cdp {
+                linkNote = "I'm linked to your own Chrome (CDP \(cdp)) — I'll work right in your browser."
+            } else if let profile {
+                linkNote = "I'm using your Chrome profile “\(profile)” — your logins come along."
+            }
         }
 
         var arguments: [String] = []
@@ -179,6 +194,9 @@ final class AgentWorkspaceController: ObservableObject {
                 appendStatus("Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim”.")
             } else if browserIsReal {
                 appendStatus("Hi! Tell me what to do on the web — I'll open a Chrome window you can watch. If a site needs your password, I'll hand the keyboard to you.")
+                if let linkNote {
+                    appendStatus(linkNote)
+                }
             } else {
                 appendStatus("Hi! Tell me what you'd like me to do in the browser.")
             }
@@ -245,7 +263,25 @@ final class AgentWorkspaceController: ObservableObject {
         input = ""
         transcript.append(AgentTranscriptEntry(kind: .user, text: text))
         phase = .working
-        client.send(.user(text))
+
+        // Ground every real-browser turn in what's on screen: "post it here"
+        // almost always means the page that's already open, so the model gets
+        // a [Current browser page: …] header without the user spelling it out.
+        guard let real = realBrowser, real.hasActiveSession else {
+            client.send(.user(text))
+            return
+        }
+        let client = self.client
+        Task.detached {
+            var header = ""
+            let url = real.execute("get url")
+            if url.ok, !url.output.isEmpty, url.output != "about:blank" {
+                let title = real.execute("get title")
+                let pageTitle = (title.ok && !title.output.isEmpty) ? title.output : "untitled"
+                header = "[Current browser page: \(pageTitle) — \(url.output)]\n"
+            }
+            client.send(.user(header + text))
+        }
     }
 
     /// Replays a saved automation directly on the engine — no agent, no network,
