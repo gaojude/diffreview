@@ -268,7 +268,7 @@ const REAL_SYSTEM_PROMPT = [
   '  so someone watching can follow along.',
 ].join('\n');
 
-async function runLive(realBrowser) {
+async function runLive(realBrowser, model) {
   let sdk;
   let z;
   try {
@@ -297,11 +297,20 @@ async function runLive(realBrowser) {
     }
   });
 
+  // Watchdog state: a turn that produces no SDK traffic for minutes means the
+  // model leg hung (e.g. a gateway request that never returns). Failing loudly
+  // beats an eternal "Working…" chip.
+  let working = false;
+  let lastActivity = Date.now();
+  const touch = () => { lastActivity = Date.now(); };
+
   async function* userMessages() {
     while (true) {
       while (queue.length > 0) {
         const text = queue.shift();
         emit({ type: 'state', value: 'working' });
+        working = true;
+        touch();
         yield { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } };
       }
       await new Promise((resolve) => {
@@ -315,6 +324,10 @@ async function runLive(realBrowser) {
   /// at `message.message`, but tolerate content at the top level too.
   function handleSdkMessage(message) {
     if (!message || typeof message !== 'object') return;
+    touch();
+    if (message.type === 'result') {
+      working = false;
+    }
     if (message.type === 'assistant') {
       const content = message.message && Array.isArray(message.message.content)
         ? message.message.content
@@ -346,7 +359,9 @@ async function runLive(realBrowser) {
             // Round-trip through the app, which executes the command on the
             // in-process engine and answers with tool_result.
             const command = args && typeof args.command === 'string' ? args.command : '';
+            touch();
             const result = await requestTool(command);
+            touch();
             return { content: [{ type: 'text', text: result.output }] };
           },
         ),
@@ -361,8 +376,20 @@ async function runLive(realBrowser) {
         permissionMode: 'bypassPermissions',
         maxTurns: 50,
         systemPrompt: realBrowser ? REAL_SYSTEM_PROMPT : SYSTEM_PROMPT,
+        ...(model ? { model } : {}),
       },
     });
+
+    const watchdog = setInterval(() => {
+      if (working && Date.now() - lastActivity > 240_000) {
+        emit({
+          type: 'fatal',
+          message: 'The model stopped responding (no activity for 4 minutes). Close and reopen the Assistant to start fresh.',
+        });
+        exitAfterFlush(1);
+      }
+    }, 15_000);
+    watchdog.unref();
 
     for await (const message of stream) {
       try {
@@ -397,6 +424,7 @@ function parseArgs(argv) {
   let mockPath = null;
   let delayMs = 150;
   let realBrowser = false;
+  let model = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--mock') {
@@ -407,6 +435,9 @@ function parseArgs(argv) {
       const parsed = Number(argv[i + 1]);
       if (Number.isFinite(parsed) && parsed >= 0) delayMs = parsed;
       i += 1;
+    } else if (arg === '--model') {
+      model = typeof argv[i + 1] === 'string' ? argv[i + 1] : null;
+      i += 1;
     } else if (arg === '--real') {
       // The app executes commands against the real agent-browser CLI; teach
       // the model the real grammar and real-web ground rules.
@@ -415,11 +446,11 @@ function parseArgs(argv) {
       diag(`ignoring unknown argument: ${arg}`);
     }
   }
-  return { mockRequested, mockPath, delayMs, realBrowser };
+  return { mockRequested, mockPath, delayMs, realBrowser, model };
 }
 
 function main() {
-  const { mockRequested, mockPath, delayMs, realBrowser } = parseArgs(process.argv.slice(2));
+  const { mockRequested, mockPath, delayMs, realBrowser, model } = parseArgs(process.argv.slice(2));
   if (mockRequested) {
     if (!mockPath) {
       emit({ type: 'fatal', message: 'The --mock flag needs a scenario path, like: --mock scenarios/insurance-claim.json' });
@@ -428,7 +459,7 @@ function main() {
     }
     runMock(mockPath, delayMs);
   } else {
-    runLive(realBrowser).catch((err) => {
+    runLive(realBrowser, model).catch((err) => {
       diag(`unexpected live-mode failure: ${err && err.stack ? err.stack : String(err)}`);
       emit({
         type: 'fatal',

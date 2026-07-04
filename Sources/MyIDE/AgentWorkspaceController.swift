@@ -133,8 +133,16 @@ final class AgentWorkspaceController: ObservableObject {
         var arguments: [String] = []
         if useMock {
             arguments = ["--mock", harnessDirectory.appendingPathComponent("scenarios/insurance-claim.json").path]
-        } else if realExecutor != nil {
-            arguments = ["--real"]
+        } else {
+            if realExecutor != nil {
+                arguments = ["--real"]
+            }
+            // Explicit model override; otherwise the SDK resolves from
+            // ANTHROPIC_MODEL / the claude CLI's default.
+            if let model = environment["MYIDE_ASSISTANT_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !model.isEmpty {
+                arguments += ["--model", model]
+            }
         }
 
         // Real CLI calls block for seconds, so they run right on the client's
