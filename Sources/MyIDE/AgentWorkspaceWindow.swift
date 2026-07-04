@@ -23,16 +23,18 @@ final class AgentWorkspaceWindowController: NSObject, NSWindowDelegate {
 
         let controller = AgentWorkspaceController()
         let content = AgentWorkspaceView(controller: controller)
-            .frame(minWidth: 980, minHeight: 560)
+            .frame(minWidth: 320, minHeight: 400)
 
+        // Deliberately small: a plugin-style chat companion, not an IDE pane —
+        // the real browser window is where the action shows.
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Assistant"
-        window.minSize = NSSize(width: 980, height: 560)
+        window.minSize = NSSize(width: 320, height: 400)
         window.toolbarStyle = .unified
         window.contentViewController = NSHostingController(rootView: content)
         window.isReleasedWhenClosed = false

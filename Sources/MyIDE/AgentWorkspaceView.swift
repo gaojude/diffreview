@@ -1,20 +1,17 @@
 import SwiftUI
 
-/// Root of the Assistant window: automations shelf | session terminal | browser.
+/// Root of the Assistant window. Currently chat-only by design: a compact,
+/// plugin-style companion — the agent's browser work happens in the real
+/// Chrome window, so the session console is the whole story. The automations
+/// shelf and the mock-browser pane still exist in the codebase
+/// (AutomationShelfView / AgentBrowserPaneView) but are not mounted for now.
 struct AgentWorkspaceView: View {
     @ObservedObject var controller: AgentWorkspaceController
 
     var body: some View {
-        HSplitView {
-            AutomationShelfView(controller: controller)
-                .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
-            AgentTerminalPaneView(controller: controller)
-                .frame(minWidth: 360, idealWidth: 480, maxWidth: .infinity)
-            AgentBrowserPaneView(controller: controller)
-                .frame(minWidth: 320, idealWidth: 400, maxWidth: .infinity)
-        }
-        .task {
-            controller.connect()
-        }
+        AgentTerminalPaneView(controller: controller)
+            .task {
+                controller.connect()
+            }
     }
 }

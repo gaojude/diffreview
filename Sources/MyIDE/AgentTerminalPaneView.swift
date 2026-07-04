@@ -110,7 +110,7 @@ struct AgentTerminalPaneView: View {
 
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField("Tell me what to do — try: Submit my massage claim", text: $controller.input)
+            TextField("Tell me what to do…", text: $controller.input)
                 .textFieldStyle(.plain)
                 .font(Self.font)
                 .foregroundStyle(Color.white)

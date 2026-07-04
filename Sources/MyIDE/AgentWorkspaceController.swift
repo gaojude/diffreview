@@ -168,11 +168,11 @@ final class AgentWorkspaceController: ObservableObject {
             mode = useMock ? .mock : .live
             phase = .ready
             if useMock {
-                appendStatus("Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim” — or run a saved automation on the left.")
+                appendStatus("Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim”.")
             } else if browserIsReal {
-                appendStatus("Hi! I've got a real Chrome browser. Tell me what to do on the web and watch the window I open — if a site needs your password, I'll hand the keyboard to you.")
+                appendStatus("Hi! Tell me what to do on the web — I'll open a Chrome window you can watch. If a site needs your password, I'll hand the keyboard to you.")
             } else {
-                appendStatus("Hi! Tell me what you'd like me to do in the browser, or run a saved automation on the left.")
+                appendStatus("Hi! Tell me what you'd like me to do in the browser.")
             }
             // Scripted entry point: launch with a goal and the session starts
             // itself — no typing needed (demos, tests, "open and go" shortcuts).
@@ -250,7 +250,7 @@ final class AgentWorkspaceController: ObservableObject {
             engine.reset()
         }
         appendStatus(real == nil
-            ? "Replaying “\(automation.name)” — watch the browser on the right."
+            ? "Replaying “\(automation.name)”."
             : "Replaying “\(automation.name)” — watch the Chrome window.")
         phase = .replaying(step: 0, of: automation.steps.count)
 

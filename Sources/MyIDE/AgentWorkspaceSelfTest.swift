@@ -144,7 +144,7 @@ enum AgentWorkspaceSelfTest {
 
         let controller = AgentWorkspaceController(store: store)
         let host = NSHostingView(rootView: AgentWorkspaceView(controller: controller))
-        host.frame = NSRect(x: 0, y: 0, width: 1_000, height: 600)
+        host.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
         host.layoutSubtreeIfNeeded()
         guard host.fittingSize.width > 0, host.fittingSize.height > 0 else {
             fail("workspace view did not produce a visible layout", code: 10)
