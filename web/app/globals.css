@@ -1,0 +1,439 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "Berkeley Mono", "SF Mono", "Menlo", monospace;
+  --color-bg: #0a0a0c;
+  --color-surface: #141416;
+  --color-surface-2: #1a1a1e;
+  --color-border: #2a2a2e;
+  --color-text: #e8e8ea;
+  --color-text-dim: #888890;
+  --color-accent: #ff5c5c;
+  --color-blue: #6699ff;
+  --color-green: #4ade80;
+  --color-editor-bg: #131317;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(255, 92, 92, 0.3);
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.6s ease-out both;
+}
+
+/* --- Diff Demo --- */
+
+@layer components {
+  @keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0; }
+  }
+
+  @keyframes cardIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .diff-demo-wrapper {
+    width: 100%;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  /* Story caption under the demo window, one line per scene */
+  .demo-caption {
+    margin-top: 14px;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--color-text-dim);
+    min-height: 20px;
+    transition: opacity 0.3s ease;
+  }
+
+  .demo-caption .step-no {
+    color: var(--color-accent);
+    font-weight: 600;
+    margin-right: 8px;
+  }
+
+  /* Stage: sidebar + scrolling diff document + agent terminal overlay */
+  .demo-stage {
+    position: relative;
+    height: 400px;
+    overflow: hidden;
+    display: flex;
+  }
+
+  .demo-sidebar {
+    width: 0;
+    flex-shrink: 0;
+    border-right: 1px solid var(--color-border);
+    background: #17171b;
+    overflow: hidden;
+    transition: width 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .demo-sidebar.visible { width: 230px; }
+
+  .demo-sidebar-inner {
+    width: 230px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 2px 2px;
+  }
+
+  .sidebar-count {
+    color: var(--color-text-dim);
+    font-weight: 400;
+  }
+
+  .copyall-btn {
+    font-size: 10px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    color: var(--color-text-dim);
+    background: var(--color-surface);
+    transition: all 0.25s ease;
+  }
+
+  .copyall-btn.flash {
+    border-color: rgba(74, 222, 128, 0.7);
+    color: var(--color-green);
+    background: rgba(74, 222, 128, 0.12);
+    box-shadow: 0 0 24px rgba(74, 222, 128, 0.25);
+  }
+
+  .sidebar-card {
+    border: 1px solid var(--color-border);
+    border-left: 3px solid rgba(45, 212, 191, 0.8);
+    border-radius: 8px;
+    background: var(--color-surface);
+    padding: 7px 9px;
+    animation: cardIn 0.35s ease-out both;
+  }
+
+  .sc-path {
+    font-size: 9.5px;
+    color: var(--color-text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sc-text {
+    font-size: 10.5px;
+    margin-top: 3px;
+    line-height: 1.45;
+  }
+
+  .demo-scroller {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    padding: 10px 10px 0;
+  }
+
+  .demo-doc {
+    transition: transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform;
+  }
+
+  /* Dims the review UI while the agent terminal has the stage */
+  .demo-dim {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 10, 12, 0.72);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+    z-index: 15;
+  }
+
+  .demo-dim.visible { opacity: 1; }
+
+  /* The external coding agent, as a floating terminal over the stage */
+  .agent-terminal {
+    position: absolute;
+    left: 8%;
+    right: 8%;
+    top: 8%;
+    border-radius: 10px;
+    border: 1px solid var(--color-border);
+    background: #101014;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+    transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    pointer-events: none;
+    z-index: 20;
+  }
+
+  .agent-terminal.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+
+  .at-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 28px;
+    padding: 0 10px;
+    background: #1b1b20;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 10.5px;
+    color: var(--color-text-dim);
+    border-radius: 10px 10px 0 0;
+  }
+
+  .at-body {
+    padding: 10px 12px 12px;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+
+  .at-line { white-space: pre-wrap; }
+  .at-cmd    { color: var(--color-text); }
+  .at-dim    { color: var(--color-text-dim); }
+  .at-ok     { color: var(--color-green); }
+  .at-prompt { color: rgb(45, 212, 191); }
+
+  .diff-window {
+    border-radius: 12px;
+    border: 1px solid var(--color-border);
+    overflow: hidden;
+    background: var(--color-editor-bg);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  }
+
+  .diff-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 36px;
+    padding: 0 12px;
+    background: #212126;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .diff-titlebar-text {
+    font-size: 12px;
+    color: var(--color-text-dim);
+    font-weight: 500;
+  }
+
+  .diff-traffic-lights {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .tl-red, .tl-yellow, .tl-green {
+    display: block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+  }
+
+  .tl-red    { background: #ff5f57; }
+  .tl-yellow { background: #febc2e; }
+  .tl-green  { background: #28c840; }
+
+  .diff-viewport {
+    position: relative;
+    padding: 10px;
+    min-height: 380px;
+  }
+
+  /* GitHub-style sticky file header bar */
+  .diff-file-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: #1d1d22;
+    font-size: 11.5px;
+    margin-bottom: 8px;
+  }
+
+  .dfh-chevron { color: var(--color-text-dim); font-size: 9px; }
+  .dfh-name    { font-weight: 600; }
+  .dfh-dir     { color: var(--color-text-dim); font-size: 10.5px; }
+  .dfh-adds    { color: var(--color-green); font-size: 10.5px; margin-left: auto; }
+  .dfh-dels    { color: var(--color-accent); font-size: 10.5px; }
+  .dfh-hidden  { color: var(--color-text-dim); font-size: 10.5px; margin-left: auto; }
+
+  .dfh-reviewed {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--color-text-dim);
+    font-size: 10.5px;
+    margin-left: 10px;
+  }
+
+  .dfh-checkbox {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--color-border);
+    border-radius: 3px;
+    background: var(--color-surface);
+    color: var(--color-green);
+    font-size: 10px;
+    line-height: 1;
+    transition: border-color 0.2s ease;
+  }
+
+  .dfh-checkbox.checked {
+    border-color: var(--color-green);
+  }
+
+  /* Diff rows: split layout, two half-width panes */
+  .diff-rows {
+    display: flex;
+    flex-direction: column;
+    font-size: 11.5px;
+    line-height: 1.75;
+  }
+
+  .diff-row {
+    display: flex;
+    white-space: pre;
+    overflow: hidden;
+  }
+
+  .diff-row-side {
+    flex: 1 1 50%;
+    display: flex;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 4px;
+  }
+
+  .diff-row-side.left {
+    border-right: 1px solid var(--color-border);
+  }
+
+  .diff-gutter {
+    width: 30px;
+    flex-shrink: 0;
+    text-align: right;
+    padding-right: 8px;
+    color: #55555c;
+    user-select: none;
+  }
+
+  .diff-code { overflow: hidden; text-overflow: clip; }
+
+  .row-add { background: rgba(74, 222, 128, 0.09); }
+  .row-del { background: rgba(255, 92, 92, 0.09); }
+  .row-add .diff-gutter { color: rgba(74, 222, 128, 0.6); }
+  .row-del .diff-gutter { color: rgba(255, 92, 92, 0.6); }
+  .row-selected { background: rgba(102, 153, 255, 0.16); }
+
+  .diff-row-side.commented {
+    box-shadow: inset 3px 0 0 0 rgba(45, 212, 191, 0.8);
+  }
+
+  /* syntax tint */
+  .c-kw  { color: #c792ea; }
+  .c-fn  { color: #82aaff; }
+  .c-str { color: #c3e88d; }
+  .c-cm  { color: #616168; }
+  .c-num { color: #f78c6c; }
+
+  /* Inline comment composer / committed comment card */
+  .diff-comment-card {
+    margin: 6px 0 8px 40px;
+    max-width: 420px;
+    border: 1px solid rgba(45, 212, 191, 0.35);
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(20, 24, 28, 0.98), rgba(18, 22, 30, 0.98));
+    padding: 8px 12px;
+    font-size: 11px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  }
+
+  .diff-comment-label {
+    color: rgb(45, 212, 191);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 3px;
+  }
+
+  .t-cursor {
+    display: inline-block;
+    width: 6px;
+    height: 12px;
+    background: var(--color-text);
+    vertical-align: text-bottom;
+    animation: cursorBlink 1s step-end infinite;
+  }
+
+  /* "Copied" toast */
+  .diff-toast {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: linear-gradient(135deg, rgba(18, 24, 22, 0.95), rgba(24, 34, 30, 0.95));
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(74, 222, 128, 0.35);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 500;
+    padding: 14px 28px;
+    border-radius: 14px;
+    box-shadow:
+      0 0 80px rgba(74, 222, 128, 0.18),
+      0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+      0 20px 60px rgba(0, 0, 0, 0.4);
+    z-index: 10;
+    pointer-events: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .diff-viewport { min-height: 300px; }
+  .diff-rows { font-size: 9px; }
+  .diff-gutter { width: 20px; padding-right: 5px; }
+  .diff-file-header { font-size: 10px; }
+  .diff-comment-card { margin-left: 12px; }
+}

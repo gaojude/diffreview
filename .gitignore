@@ -3,6 +3,8 @@
 build/
 dist/
 *.dmg
+# …except the release DMG the landing page serves
+!web/public/*.dmg
 .claude/
 DerivedData/
 *.xcuserstate

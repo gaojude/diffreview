@@ -104,6 +104,7 @@ Sources/
   MyIDESelfTest/  assertion harness (runs under plain swift build, exits non-zero on failure)
 scripts/          build / install / selftest / e2e
 package.sh        release packaging → dist/Redline-v<version>.dmg
+web/              redline.dev landing page (Next.js, deployed on Vercel)
 ```
 
 Internal target names keep the project's working title (`MyIDE`); the product is Redline.
