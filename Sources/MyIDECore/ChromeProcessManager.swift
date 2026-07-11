@@ -90,12 +90,15 @@ public final class ChromeProcessManager {
 
         let process = Process()
         process.executableURL = config.chromeBinaryURL
+        // One clean initial tab that the agent's first `open` reuses. We do NOT
+        // pass --restore-last-session: it reopens old tabs AND leaves the fresh
+        // blank behind, which is exactly the stray blank page users complained
+        // about on every relaunch.
         process.arguments = [
             "--remote-debugging-port=\(config.port)",
             "--user-data-dir=\(config.userDataDir.path)",
             "--no-first-run",
             "--no-default-browser-check",
-            "--restore-last-session",
             "about:blank",
         ]
         // Chrome is chatty on stderr; keep it off our pipes.

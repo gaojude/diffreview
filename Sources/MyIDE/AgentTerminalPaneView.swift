@@ -8,10 +8,14 @@ struct AgentTerminalPaneView: View {
     @State private var showSaveLogin = false
     @State private var loginName = ""
 
-    private static let background = Color(red: 0.11, green: 0.12, blue: 0.16)
-    private static let inputFill = Color(red: 0.17, green: 0.18, blue: 0.23)
-    private static let inputStroke = Color(red: 0.30, green: 0.32, blue: 0.40)
-    private static let accent = Color(red: 0.46, green: 0.62, blue: 0.98)
+    // Light theme.
+    private static let background = Color(red: 0.97, green: 0.975, blue: 0.98)
+    private static let inputFill = Color.white
+    private static let inputStroke = Color(red: 0.80, green: 0.82, blue: 0.86)
+    private static let accent = Color(red: 0.16, green: 0.46, blue: 0.95)
+    private static let primaryText = Color(red: 0.13, green: 0.14, blue: 0.17)
+    private static let secondaryText = Color(red: 0.42, green: 0.45, blue: 0.50)
+    private static let userGreen = Color(red: 0.14, green: 0.55, blue: 0.30)
     private static let font = Font.system(size: 13, design: .monospaced)
 
     var body: some View {
@@ -39,14 +43,14 @@ struct AgentTerminalPaneView: View {
                 .frame(width: 8, height: 8)
             Text(controller.statusText)
                 .font(.caption)
-                .foregroundStyle(Color(white: 0.85))
+                .foregroundStyle(Self.primaryText)
             if controller.mode == .mock {
                 Text("demo")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.blue.opacity(0.35)))
-                    .foregroundStyle(Color(white: 0.9))
+                    .background(Capsule().fill(Self.accent.opacity(0.15)))
+                    .foregroundStyle(Self.accent)
             }
             Spacer()
         }
@@ -74,7 +78,7 @@ struct AgentTerminalPaneView: View {
             if controller.savedSessions.isEmpty {
                 Text("No saved logins yet")
                     .font(.caption)
-                    .foregroundStyle(Color(white: 0.6))
+                    .foregroundStyle(Self.secondaryText)
             } else {
                 Menu {
                     ForEach(controller.savedSessions) { session in
@@ -168,29 +172,29 @@ struct AgentTerminalPaneView: View {
     private func entryView(_ entry: AgentTranscriptEntry) -> some View {
         switch entry.kind {
         case .user:
-            Text("\(Text("❯ ").foregroundStyle(Color.green))\(Text(entry.text).foregroundStyle(Color.white))")
+            Text("\(Text("❯ ").foregroundStyle(Self.userGreen))\(Text(entry.text).foregroundStyle(Self.primaryText))")
                 .font(Self.font.weight(.semibold))
                 .textSelection(.enabled)
         case .assistant:
             Text(entry.text)
                 .font(Self.font)
-                .foregroundStyle(Color(white: 0.88))
+                .foregroundStyle(Self.primaryText)
                 .textSelection(.enabled)
         case .tool(let ok):
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(Text("⚙ ").foregroundStyle(Color(white: 0.45)))\(Text(entry.text).foregroundStyle(Color(white: 0.6)))\(Text(ok ? "  ✓" : "  ✗").foregroundStyle(ok ? Color.green.opacity(0.8) : Color.orange))")
+                Text("\(Text("⚙ ").foregroundStyle(Self.secondaryText))\(Text(entry.text).foregroundStyle(Self.secondaryText))\(Text(ok ? "  ✓" : "  ✗").foregroundStyle(ok ? Self.userGreen : Color.orange))")
                     .font(Self.font)
                 if let detail = entry.detail {
                     Text("   → \(detail)")
                         .font(Self.font)
-                        .foregroundStyle(ok ? Color(white: 0.45) : Color.orange.opacity(0.9))
+                        .foregroundStyle(ok ? Self.secondaryText : Color.orange)
                 }
             }
             .textSelection(.enabled)
         case .status:
             Text(entry.text)
                 .font(Self.font.italic())
-                .foregroundStyle(Color(red: 0.55, green: 0.7, blue: 0.95))
+                .foregroundStyle(Self.accent)
                 .textSelection(.enabled)
         }
     }
@@ -202,7 +206,7 @@ struct AgentTerminalPaneView: View {
             TextField("Tell me what to do…", text: $controller.input)
                 .textFieldStyle(.plain)
                 .font(Self.font)
-                .foregroundStyle(.white)
+                .foregroundStyle(Self.primaryText)
                 .tint(Self.accent)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)

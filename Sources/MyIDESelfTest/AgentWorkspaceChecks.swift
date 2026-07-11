@@ -337,10 +337,11 @@ private func checkRealBrowserSupport() {
     check(slug == "my-qq-login", "login names slug to kebab-case")
     let stateURL = sessions.stateFileURL(forSlug: slug)
     try? Data("{\"cookies\":[]}".utf8).write(to: stateURL)  // stand in for agent-browser state save
-    check(sessions.recordMetadata(name: "My QQ Login!", slug: slug, savedAt: Date(timeIntervalSince1970: 1_000)), "records login metadata")
+    check(sessions.recordMetadata(name: "My QQ Login!", slug: slug, savedAt: Date(timeIntervalSince1970: 1_000), url: "https://qzone.qq.com/"), "records login metadata")
     let listed = sessions.list()
     check(listed.count == 1 && listed.first?.name == "My QQ Login!", "lists the saved login by its human name")
     check(listed.first?.fileURL.lastPathComponent == "my-qq-login.json", "saved login points at its state file")
+    check(listed.first?.url == "https://qzone.qq.com/", "saved login remembers the page it was saved on")
     check(sessions.delete(slug: slug), "deletes the saved login")
     check(sessions.list().isEmpty, "list empty after delete")
 

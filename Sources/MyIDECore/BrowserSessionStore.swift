@@ -27,13 +27,17 @@ public struct BrowserSessionStore {
         public var slug: String
         public var savedAt: Date
         public var fileURL: URL
+        /// The page open when the login was saved — restore returns here so the
+        /// user lands on the signed-in site, not a blank tab.
+        public var url: String?
         public var id: String { slug }
 
-        public init(name: String, slug: String, savedAt: Date, fileURL: URL) {
+        public init(name: String, slug: String, savedAt: Date, fileURL: URL, url: String? = nil) {
             self.name = name
             self.slug = slug
             self.savedAt = savedAt
             self.fileURL = fileURL
+            self.url = url
         }
     }
 
@@ -41,6 +45,7 @@ public struct BrowserSessionStore {
     private struct Meta: Codable {
         var name: String
         var savedAt: Date
+        var url: String?
     }
 
     public static func slug(from name: String) -> String {
@@ -56,13 +61,13 @@ public struct BrowserSessionStore {
     /// Records the human name for a just-saved state file. Call after the
     /// `agent-browser state save` succeeds.
     @discardableResult
-    public func recordMetadata(name: String, slug: String, savedAt: Date) -> Bool {
+    public func recordMetadata(name: String, slug: String, savedAt: Date, url: String? = nil) -> Bool {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(Meta(name: name, savedAt: savedAt))
+            let data = try encoder.encode(Meta(name: name, savedAt: savedAt, url: url))
             try data.write(to: metaFileURL(forSlug: slug), options: .atomic)
             return true
         } catch {
@@ -92,7 +97,8 @@ public struct BrowserSessionStore {
                 name: meta?.name ?? slug,
                 slug: slug,
                 savedAt: meta?.savedAt ?? modified ?? Date(timeIntervalSince1970: 0),
-                fileURL: entry
+                fileURL: entry,
+                url: meta?.url
             ))
         }
         return sessions.sorted { $0.savedAt > $1.savedAt }

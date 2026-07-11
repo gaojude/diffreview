@@ -39,6 +39,8 @@ final class AgentWorkspaceWindowController: NSObject, NSWindowDelegate {
         window.contentViewController = NSHostingController(rootView: content)
         window.isReleasedWhenClosed = false
         window.delegate = self
+        // Light theme throughout, regardless of the system appearance.
+        window.appearance = NSAppearance(named: .aqua)
         // Float above other apps — this is a companion to the browser it's
         // driving, so it should stay visible over the Chrome window, and
         // follow the user across Spaces.

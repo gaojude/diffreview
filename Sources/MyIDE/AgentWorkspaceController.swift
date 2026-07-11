@@ -404,14 +404,17 @@ final class AgentWorkspaceController: ObservableObject {
         let store = sessionStore
         isSavingSession = true
         Task { @MainActor in
-            let result = await Task.detached { real.saveState(to: fileURL) }.value
+            let outcome = await Task.detached { () -> (AgentBrowserCommandResult, String?) in
+                let saved = real.saveState(to: fileURL)
+                return (saved, saved.ok ? real.currentURL() : nil)
+            }.value
             self.isSavingSession = false
-            if result.ok {
-                store.recordMetadata(name: trimmed, slug: slug, savedAt: Date())
+            if outcome.0.ok {
+                store.recordMetadata(name: trimmed, slug: slug, savedAt: Date(), url: outcome.1)
                 self.savedSessions = store.list()
                 self.appendStatus("Saved your login as “\(trimmed)”. I'll restore it next time so you stay signed in.")
             } else {
-                self.appendStatus("I couldn't save the login: \(result.output)")
+                self.appendStatus("I couldn't save the login: \(outcome.0.output)")
             }
         }
     }
@@ -420,10 +423,11 @@ final class AgentWorkspaceController: ObservableObject {
     func restoreLogin(_ session: BrowserSessionStore.SavedSession) {
         guard let real = realBrowser, !isBusy else { return }
         let fileURL = session.fileURL
+        let destination = session.url
         appendStatus("Restoring your “\(session.name)” login…")
         phase = .working
         Task { @MainActor in
-            let result = await Task.detached { real.loadState(from: fileURL) }.value
+            let result = await Task.detached { real.loadState(from: fileURL, navigateTo: destination) }.value
             self.currentRealURL = self.currentRealURL // no-op; keep pane fresh
             self.actionRevision += 1
             self.phase = (self.mode == .none) ? .offline("Assistant offline") : .ready

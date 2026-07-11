@@ -265,10 +265,11 @@ public final class RealAgentBrowser {
         return AgentBrowserCommandResult(ok: result.ok, output: result.output)
     }
 
-    /// Restores cookies + storage from `fileURL` into the current session, then
-    /// reloads so the page reflects the restored login. Ensures a page exists
-    /// first (the CLI needs a live context to load state into).
-    public func loadState(from fileURL: URL) -> AgentBrowserCommandResult {
+    /// Restores cookies + storage from `fileURL` into the current session. If
+    /// `navigateTo` is given, opens that page (reusing the current tab) so the
+    /// user lands on the signed-in site; otherwise reloads whatever is showing.
+    /// Ensures a live context exists first.
+    public func loadState(from fileURL: URL, navigateTo: String? = nil) -> AgentBrowserCommandResult {
         lock.lock()
         defer { lock.unlock() }
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
@@ -290,7 +291,12 @@ public final class RealAgentBrowser {
         }
         let load = run(arguments: ["--session", sessionID, "state", "load", fileURL.path])
         guard load.ok else { return AgentBrowserCommandResult(ok: false, output: load.output) }
-        _ = run(arguments: ["--session", sessionID, "reload"])
+        // Land the user on the signed-in page instead of a blank tab.
+        if let destination = navigateTo, !destination.isEmpty, destination != "about:blank" {
+            _ = run(arguments: ["--session", sessionID, "open", destination])
+        } else {
+            _ = run(arguments: ["--session", sessionID, "reload"])
+        }
         return AgentBrowserCommandResult(ok: true, output: "Login restored.")
     }
 
