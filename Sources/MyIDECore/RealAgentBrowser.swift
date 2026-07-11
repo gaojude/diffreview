@@ -68,14 +68,26 @@ public struct RealSnapshotIndex: Sendable {
 public final class RealAgentBrowser {
     private let cliURL: URL
     private let sessionID: String
-    /// CDP target ("9222" or a ws:// URL): link the session to the user's own
-    /// running Chrome instead of launching a managed one.
+    /// CDP target ("9222" or a ws:// URL): link the session to an externally
+    /// started Chrome. We do not own its lifecycle, so we cannot relaunch it.
     private let cdpTarget: String?
     /// Chrome profile name or path (e.g. "Default"): launch the managed browser
     /// with the user's real profile so their logins come along.
     private let chromeProfile: String?
+    /// When set, the app OWNS a dedicated debug Chrome: it can detect the user
+    /// closing it and relaunch — the recovery path a bare CDP attach can't do.
+    private let chromeManager: ChromeProcessManager?
+    /// Fires (off the calling thread) with plain-English notes worth surfacing,
+    /// e.g. after the browser was reopened.
+    public var onStatus: ((String) -> Void)?
+
     private var didConnectCDP = false
     private var hasSessionFlag = false
+
+    /// True in either linked mode (external CDP or app-managed Chrome): `open`
+    /// navigates the connected browser rather than launching a CLI one.
+    private var isLinkedMode: Bool { cdpTarget != nil || chromeManager != nil }
+    private var connectTarget: String? { cdpTarget ?? chromeManager.map { String($0.port) } }
     /// One CLI invocation at a time — commands are inherently sequential and
     /// the caller may be a background queue plus a replay task.
     private let lock = NSLock()
@@ -104,12 +116,14 @@ public final class RealAgentBrowser {
         cliURL: URL,
         sessionID: String = "myide-assistant",
         cdpTarget: String? = nil,
-        chromeProfile: String? = nil
+        chromeProfile: String? = nil,
+        chromeManager: ChromeProcessManager? = nil
     ) {
         self.cliURL = cliURL
         self.sessionID = sessionID
         self.cdpTarget = cdpTarget
         self.chromeProfile = chromeProfile
+        self.chromeManager = chromeManager
     }
 
     /// Blocking — run off the main thread. Output is capped so a huge page
@@ -130,23 +144,14 @@ public final class RealAgentBrowser {
             )
         }
 
-        // Linked-to-real-Chrome mode: attach over CDP before the first real
-        // command. The user's own browser is already visible, so no --headed,
-        // and close is never forwarded (see closeSession).
-        if let target = cdpTarget {
-            if !didConnectCDP, verb != "connect" {
-                let connect = run(arguments: ["--session", sessionID, "connect", target])
-                guard connect.ok else {
-                    return AgentBrowserCommandResult(
-                        ok: false,
-                        output: "Could not attach to your Chrome at \(target): \(connect.output)\nStart Chrome with remote debugging first: open -a \"Google Chrome\" --args --remote-debugging-port=\(target)"
-                    )
-                }
-                didConnectCDP = true
-                hasSessionFlag = true
+        // Linked-to-real-Chrome mode: make sure the browser is up and attached
+        // before the command. `connect` itself is exempt (it IS the attach).
+        if isLinkedMode, verb != "connect" {
+            if let error = ensureConnectedLocked() {
+                return AgentBrowserCommandResult(ok: false, output: error)
             }
         } else if verb == "open" {
-            // The whole point of real mode is a browser the user can watch.
+            // CLI-launched real browser (no link): a window the user can watch.
             if !tokens.contains("--headed"), !tokens.contains("--headless") {
                 tokens.insert("--headed", at: 1)
             }
@@ -155,7 +160,17 @@ public final class RealAgentBrowser {
             }
         }
 
-        let result = run(arguments: ["--session", sessionID] + tokens)
+        var result = run(arguments: ["--session", sessionID] + tokens)
+
+        // Recover from a browser the user closed mid-session: if a managed
+        // Chrome's port went dark, relaunch, reconnect, and retry once.
+        if !result.ok, chromeManager != nil, !chromeManager!.isRunning(), verb != "connect" {
+            didConnectCDP = false
+            hasSessionFlag = false
+            if ensureConnectedLocked() == nil {
+                result = run(arguments: ["--session", sessionID] + tokens)
+            }
+        }
 
         if result.ok {
             if verb == "open" { hasSessionFlag = true }
@@ -182,11 +197,54 @@ public final class RealAgentBrowser {
     }
 
     /// Ends the CLI's browser session (used on window close and before replays).
-    /// When attached to the user's OWN Chrome over CDP this is a no-op — we
-    /// never close a browser we didn't launch.
+    /// In any linked mode (external CDP or app-managed Chrome) this is a no-op —
+    /// we never close a browser we want to persist across the session.
     public func closeSession() {
-        guard cdpTarget == nil else { return }
+        guard !isLinkedMode else { return }
         _ = execute("close")
+    }
+
+    /// The current browser URL, or nil if none/unavailable — a cheap way for
+    /// callers to check "is a page actually open right now?".
+    public func currentURL() -> String? {
+        let result = execute("get url")
+        guard result.ok, !result.output.isEmpty, result.output != "about:blank" else { return nil }
+        return result.output
+    }
+
+    // MARK: - Connection management
+
+    /// Ensures the linked browser is running and attached. In managed mode this
+    /// relaunches a Chrome the user closed; in external-CDP mode it can only
+    /// (re)attach. Returns nil on success, or a user-facing error. Lock held.
+    private func ensureConnectedLocked() -> String? {
+        // Managed Chrome: relaunch if the user closed it.
+        if let manager = chromeManager {
+            if !manager.isRunning() {
+                didConnectCDP = false
+                hasSessionFlag = false
+                switch manager.ensureRunning() {
+                case .failed(let message):
+                    return "I couldn't open Chrome: \(message)"
+                case .launched:
+                    onStatus?("The browser wasn't open, so I opened a fresh Chrome window for you.")
+                case .alreadyRunning:
+                    break
+                }
+            }
+        }
+
+        guard !didConnectCDP, let target = connectTarget else { return nil }
+        let connect = run(arguments: ["--session", sessionID, "connect", target])
+        guard connect.ok else {
+            if cdpTarget != nil {
+                return "Could not attach to your Chrome at \(target): \(connect.output)\nStart Chrome with remote debugging: open -a \"Google Chrome\" --args --remote-debugging-port=\(target)"
+            }
+            return "Could not connect to the browser: \(connect.output)"
+        }
+        didConnectCDP = true
+        hasSessionFlag = true
+        return nil
     }
 
     // MARK: - Login state (save / restore)
@@ -196,7 +254,11 @@ public final class RealAgentBrowser {
     public func saveState(to fileURL: URL) -> AgentBrowserCommandResult {
         lock.lock()
         defer { lock.unlock() }
-        guard hasSessionFlag else {
+        if isLinkedMode {
+            if let error = ensureConnectedLocked() {
+                return AgentBrowserCommandResult(ok: false, output: error)
+            }
+        } else if !hasSessionFlag {
             return AgentBrowserCommandResult(ok: false, output: "Open a page first, then save the login.")
         }
         let result = run(arguments: ["--session", sessionID, "state", "save", fileURL.path])
@@ -213,14 +275,9 @@ public final class RealAgentBrowser {
             return AgentBrowserCommandResult(ok: false, output: "That saved login is missing on disk.")
         }
         // Attach/launch as needed so there's a context to load into.
-        if let target = cdpTarget {
-            if !didConnectCDP {
-                let connect = run(arguments: ["--session", sessionID, "connect", target])
-                guard connect.ok else {
-                    return AgentBrowserCommandResult(ok: false, output: "Could not attach to Chrome at \(target): \(connect.output)")
-                }
-                didConnectCDP = true
-                hasSessionFlag = true
+        if isLinkedMode {
+            if let error = ensureConnectedLocked() {
+                return AgentBrowserCommandResult(ok: false, output: error)
             }
         } else if !hasSessionFlag {
             var open = ["--session", sessionID, "open", "--headed"]

@@ -83,6 +83,25 @@ combobox options only). Successful element-targeted commands also return a
 `canonicalCommand` in label form (`click "Sign in"`) — that is what the recorder stores,
 which is why replays survive ref renumbering.
 
+## Managed Chrome & recovery
+
+In real-browser mode the app, by default, **owns** a dedicated headed Chrome
+rather than attaching to one someone else started: `ChromeProcessManager`
+(MyIDECore) launches Chrome with `--remote-debugging-port` (default 9333,
+`MYIDE_CHROME_PORT` to change) and a persistent profile at
+`~/Library/Application Support/MyIDE/ChromeProfile`, then `RealAgentBrowser`
+attaches over CDP. Because the app owns the lifecycle, it recovers from the
+user closing the browser: `ensureConnectedLocked()` runs before every command
+and, in managed mode, a fast loopback socket probe (`isRunning`, ATS-free)
+detects a dead debug port → relaunches Chrome → reconnects → and any command
+that still failed is retried once. A friendly status line ("The browser wasn't
+open, so I opened a fresh Chrome window for you.") is surfaced via
+`RealAgentBrowser.onStatus`. Launch is lazy (first browser command), and the
+persistent profile means logins survive Chrome restarts at the profile level,
+on top of the explicit save/restore feature. Overrides: `MYIDE_CHROME_CDP`
+attaches to an externally started Chrome (unmanaged — cannot relaunch it);
+`MYIDE_CHROME_PROFILE` uses a named profile with a CLI-launched browser.
+
 ## Real browser mode
 
 When the real `agent-browser` CLI is installed (found by `AgentHarnessLocator.

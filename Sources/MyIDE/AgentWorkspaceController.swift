@@ -137,8 +137,10 @@ final class AgentWorkspaceController: ObservableObject {
 
         // Live sessions get a REAL Chrome browser whenever the agent-browser
         // CLI is installed; the simulated portal stays as the offline demo.
-        // MYIDE_CHROME_CDP links to the user's own running Chrome over CDP;
-        // MYIDE_CHROME_PROFILE reuses their Chrome profile (logins included).
+        // By default the app MANAGES a dedicated persistent Chrome (so it can
+        // relaunch one the user closes). Overrides: MYIDE_CHROME_CDP attaches
+        // to an externally started Chrome; MYIDE_CHROME_PROFILE reuses a named
+        // Chrome profile with a CLI-launched browser.
         var realExecutor: RealAgentBrowser?
         var linkNote: String?
         if !useMock,
@@ -151,11 +153,26 @@ final class AgentWorkspaceController: ObservableObject {
             }
             let cdp = setting("MYIDE_CHROME_CDP")
             let profile = setting("MYIDE_CHROME_PROFILE")
-            realExecutor = RealAgentBrowser(cliURL: cli, cdpTarget: cdp, chromeProfile: profile)
+            var manager: ChromeProcessManager?
+            if cdp == nil, profile == nil, let chrome = ChromeProcessManager.discoverChrome() {
+                let port = Int(setting("MYIDE_CHROME_PORT") ?? "") ?? 9333
+                manager = ChromeProcessManager(config: .init(
+                    chromeBinaryURL: chrome,
+                    port: port,
+                    userDataDir: ChromeProcessManager.defaultUserDataDir()
+                ))
+            }
+            let executor = RealAgentBrowser(cliURL: cli, cdpTarget: cdp, chromeProfile: profile, chromeManager: manager)
+            executor.onStatus = { [weak self] note in
+                Task { @MainActor in self?.appendStatus(note) }
+            }
+            realExecutor = executor
             if let cdp {
                 linkNote = "I'm linked to your own Chrome (CDP \(cdp)) — I'll work right in your browser."
             } else if let profile {
                 linkNote = "I'm using your Chrome profile “\(profile)” — your logins come along."
+            } else if manager != nil {
+                linkNote = "I manage a Chrome window for you — if you close it, I'll just open a new one."
             }
         }
 

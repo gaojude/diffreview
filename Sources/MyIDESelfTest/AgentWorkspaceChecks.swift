@@ -343,6 +343,23 @@ private func checkRealBrowserSupport() {
     check(listed.first?.fileURL.lastPathComponent == "my-qq-login.json", "saved login points at its state file")
     check(sessions.delete(slug: slug), "deletes the saved login")
     check(sessions.list().isEmpty, "list empty after delete")
+
+    // Managed-Chrome liveness: a port nothing is listening on must read dead
+    // fast (this is what triggers the reopen-the-browser recovery).
+    let deadPortManager = ChromeProcessManager(config: .init(
+        chromeBinaryURL: URL(fileURLWithPath: "/nonexistent/chrome"),
+        port: 59_999,
+        userDataDir: scratch.appendingPathComponent("chrome-profile", isDirectory: true)
+    ))
+    let start = Date()
+    check(!deadPortManager.isRunning(timeout: 0.5), "a closed debug port reads as not running")
+    check(Date().timeIntervalSince(start) < 2, "the liveness probe returns quickly")
+    check(ChromeProcessManager.defaultUserDataDir().lastPathComponent == "ChromeProfile", "managed Chrome uses a dedicated profile dir")
+    if case .failed = deadPortManager.ensureRunning(waitUpTo: 0.5) {
+        check(true, "launching a missing Chrome binary fails cleanly")
+    } else {
+        check(false, "launching a missing Chrome binary fails cleanly")
+    }
 }
 
 // MARK: - Line buffer
