@@ -47,7 +47,10 @@ by a thin `redline` command — like `code .`, but native.
 ## Install
 
 Download the DMG from [redline.dev](https://redline.dev), drag **Redline** to Applications,
-then allow it and link the CLI:
+and open it. Choose **Open Project Folder…** on the welcome screen (or press `⌘O`). To use
+Redline from Terminal, click **Install CLI** on that same screen.
+
+You can also link the bundled CLI manually:
 
 ```sh
 sudo xattr -cr /Applications/Redline.app

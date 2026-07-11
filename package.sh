@@ -33,17 +33,7 @@ find "$BIN_DIR" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
 # The `redline` CLI: `redline .` opens the app on that directory, like `code .`.
 # Named redline-cli because MacOS/ already holds the app binary `Redline` and the default
 # APFS volume is case-insensitive — `redline` would silently overwrite it.
-# Users symlink it: sudo ln -sf "/Applications/Redline.app/Contents/MacOS/redline-cli" /usr/local/bin/redline
-cat > "$MACOS/redline-cli" <<'CLI'
-#!/bin/sh
-# Launcher for Redline — resolves the target directory and opens the app on it.
-# Resolve symlinks (the shim is usually a symlink in /usr/local/bin) back to the bundle.
-SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-APP="$(cd "$(dirname "$SELF")/../.." && pwd)"
-TARGET="${1:-.}"
-DIR="$(cd "$TARGET" 2>/dev/null && pwd)" || { echo "redline: not a directory: $TARGET" >&2; exit 1; }
-open -n "$APP" --args "$DIR"
-CLI
+cp "$ROOT/scripts/redline-cli" "$MACOS/redline-cli"
 chmod +x "$MACOS/redline-cli"
 
 cat > "$APP/Contents/Info.plist" <<PLIST

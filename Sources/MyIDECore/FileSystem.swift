@@ -125,6 +125,17 @@ public enum FileSystem {
 
     // MARK: - Root resolution
 
+    /// Resolves only a directory explicitly supplied on the command line. Unlike
+    /// `resolveRootDirectory`, this returns `nil` when the app was launched without a path,
+    /// allowing a GUI launch to present project onboarding instead of silently opening the
+    /// process working directory.
+    public static func resolveRootDirectoryArgument(arguments: [String], currentDirectory: String) -> URL? {
+        guard let pathArg = arguments.dropFirst().first(where: { !$0.hasPrefix("-") }) else {
+            return nil
+        }
+        return resolveDirectory(pathArg, relativeTo: currentDirectory)
+    }
+
     /// Resolves the directory to open from process arguments.
     /// - Parameters:
     ///   - arguments: full `CommandLine.arguments` (argv[0] is the program path).
@@ -134,6 +145,10 @@ public enum FileSystem {
     public static func resolveRootDirectory(arguments: [String], currentDirectory: String) -> URL? {
         let pathArg = arguments.dropFirst().first { !$0.hasPrefix("-") }
         let raw = pathArg ?? currentDirectory
+        return resolveDirectory(raw, relativeTo: currentDirectory)
+    }
+
+    private static func resolveDirectory(_ raw: String, relativeTo currentDirectory: String) -> URL? {
         let expanded = (raw as NSString).expandingTildeInPath
         let base = URL(fileURLWithPath: currentDirectory, isDirectory: true)
         let url = URL(fileURLWithPath: expanded, relativeTo: base)

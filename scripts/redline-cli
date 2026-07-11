@@ -1,0 +1,24 @@
+#!/bin/sh
+# Launcher embedded in Redline.app. Resolve a /usr/local/bin/redline symlink back to the
+# bundle using portable macOS `readlink` (BSD readlink does not provide `-f`).
+set -eu
+
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
+  LINK_TARGET="$(readlink "$SELF")"
+  case "$LINK_TARGET" in
+    /*) SELF="$LINK_TARGET" ;;
+    *) SELF="$LINK_DIR/$LINK_TARGET" ;;
+  esac
+done
+
+SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
+APP="$(cd "$SCRIPT_DIR/../.." && pwd)"
+TARGET="${1:-.}"
+DIR="$(cd "$TARGET" 2>/dev/null && pwd)" || {
+  echo "redline: not a directory: $TARGET" >&2
+  exit 1
+}
+
+open -n "$APP" --args "$DIR"

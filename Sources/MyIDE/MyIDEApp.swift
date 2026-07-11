@@ -6,7 +6,7 @@ import MyIDECore
 @main
 struct MyIDEApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var appState: AppState
+    @StateObject private var session: AppSession
 
     @MainActor
     init() {
@@ -15,11 +15,11 @@ struct MyIDEApp: App {
             Foundation.exit(0)
         }
 
-        let rootURL = Self.rootURL()
-        let appState = AppState(rootURL: rootURL)
-        _appState = StateObject(wrappedValue: appState)
+        let initialRootURL = Self.rootURLArgument()
+        let session = AppSession(initialRootURL: initialRootURL)
+        _session = StateObject(wrappedValue: session)
         DispatchQueue.main.async {
-            ProjectWindowController.shared.openProjectWindowIfNeeded(rootURL: rootURL, appState: appState)
+            ProjectWindowController.shared.openProjectWindowIfNeeded(session: session)
         }
     }
 
@@ -28,18 +28,56 @@ struct MyIDEApp: App {
             EmptyView()
         }
         .commands {
-            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .newItem) {
+                Button("Open Project Folder…") {
+                    ProjectWindowController.shared.chooseProjectFolder(session: session)
+                }
+                .keyboardShortcut("o", modifiers: .command)
+            }
+
+            CommandGroup(after: .appInfo) {
+                Button(cliMenuTitle) {
+                    if case .failed = session.cliInstaller.state {
+                        session.cliInstaller.retryInstall()
+                    } else {
+                        session.cliInstaller.install()
+                    }
+                }
+                    .disabled(!canInstallCLI)
+            }
 
             // Menu-based shortcuts fire regardless of which view has focus.
             CommandMenu("View") {
-                Button("Increase Font Size") { appState.increaseFontSize() }
+                Button("Increase Font Size") { session.project?.increaseFontSize() }
                     .keyboardShortcut("+", modifiers: .command)
-                Button("Decrease Font Size") { appState.decreaseFontSize() }
+                    .disabled(session.project == nil)
+                Button("Decrease Font Size") { session.project?.decreaseFontSize() }
                     .keyboardShortcut("-", modifiers: .command)
-                Button("Actual Size") { appState.resetFontSize() }
+                    .disabled(session.project == nil)
+                Button("Actual Size") { session.project?.resetFontSize() }
                     .keyboardShortcut("0", modifiers: .command)
+                    .disabled(session.project == nil)
             }
         }
+    }
+
+    private var canInstallCLI: Bool {
+        if case .available = session.cliInstaller.state { return true }
+        if case .failed = session.cliInstaller.state { return true }
+        return false
+    }
+
+    private var cliMenuTitle: String {
+        if case .available(let existingCommand) = session.cliInstaller.state, existingCommand {
+            return "Replace redline Command Line Tool…"
+        }
+        if case .installed = session.cliInstaller.state {
+            return "redline Command Line Tool Installed"
+        }
+        if case .failed = session.cliInstaller.state {
+            return "Retry redline Command Line Tool Installation…"
+        }
+        return "Install redline Command Line Tool…"
     }
 
     /// Headless harness for the review-comments flow: drives the real controller through
@@ -106,14 +144,14 @@ struct MyIDEApp: App {
         print("comments pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
     }
 
-    private static func rootURL() -> URL {
-        // The `my-ide` shim passes an absolute directory as argv[1]; fall back to the
-        // process working directory (and to that dir even if resolution fails).
+    private static func rootURLArgument() -> URL? {
+        // The `redline` shim passes an absolute directory as argv[1]. A Finder launch has no
+        // project argument and deliberately falls through to the welcome screen.
         let cwd = FileManager.default.currentDirectoryPath
-        return FileSystem.resolveRootDirectory(
+        return FileSystem.resolveRootDirectoryArgument(
             arguments: CommandLine.arguments,
             currentDirectory: cwd
-        ) ?? URL(fileURLWithPath: cwd, isDirectory: true)
+        )
     }
 
 }
@@ -162,13 +200,16 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
 
     private var projectWindow: NSWindow?
 
-    func openProjectWindowIfNeeded(rootURL: URL, appState: AppState) {
+    func openProjectWindowIfNeeded(session: AppSession) {
         guard projectWindow == nil else {
             revealProjectWindow(retries: 2)
             return
         }
 
-        let content = RootView(appState: appState)
+        let content = AppRootView(session: session) { [weak session] in
+            guard let session else { return }
+            ProjectWindowController.shared.chooseProjectFolder(session: session)
+        }
             .frame(minWidth: 1_060, minHeight: 520)
 
         let window = NSWindow(
@@ -177,8 +218,8 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "MyIDE"
-        window.representedURL = rootURL
+        window.title = "Redline"
+        window.representedURL = session.project?.rootURL
         window.minSize = NSSize(width: 1_060, height: 520)
         window.toolbarStyle = .unified
         let hosting = NSHostingController(rootView: content)
@@ -192,6 +233,32 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
 
         projectWindow = window
         revealProjectWindow(retries: 8)
+    }
+
+    func chooseProjectFolder(session: AppSession) {
+        let panel = NSOpenPanel()
+        panel.title = "Open Project Folder"
+        panel.message = "Choose a Git project to review in Redline."
+        panel.prompt = "Open Project"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = session.project?.rootURL
+
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak session] response in
+            guard response == .OK, let rootURL = panel.url, let session else { return }
+            session.openProject(rootURL)
+            self?.projectWindow?.representedURL = rootURL
+            self?.projectWindow?.title = "Redline"
+            self?.revealProjectWindow(retries: 2)
+        }
+
+        if let projectWindow {
+            panel.beginSheetModal(for: projectWindow, completionHandler: completion)
+        } else {
+            completion(panel.runModal())
+        }
     }
 
     private static func initialWindowContentRect() -> NSRect {

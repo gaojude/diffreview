@@ -170,6 +170,15 @@ do {
     let viaDefault = FileSystem.resolveRootDirectory(arguments: ["prog"], currentDirectory: tmp.path)
     check(viaDefault?.path == expected, "no arg falls back to currentDirectory")
 
+    let explicitArg = FileSystem.resolveRootDirectoryArgument(arguments: ["prog", tmp.path], currentDirectory: "/")
+    check(explicitArg?.path == expected, "explicit-only root argument resolves")
+
+    let noExplicitArg = FileSystem.resolveRootDirectoryArgument(
+        arguments: ["prog", "-psn_0_12345"],
+        currentDirectory: tmp.path
+    )
+    check(noExplicitArg == nil, "GUI launch without a path has no explicit root")
+
     check(FileSystem.resolveRootDirectory(arguments: ["prog", "/no/such/dir/xyz"], currentDirectory: "/") == nil,
           "nonexistent path -> nil")
     check(FileSystem.resolveRootDirectory(arguments: ["prog", fileA.path], currentDirectory: "/") == nil,
