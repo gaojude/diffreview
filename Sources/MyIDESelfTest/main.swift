@@ -201,6 +201,356 @@ do {
           "symlink to directory classified as directory")
 }
 
+// MARK: - ChangeSetDocument (pure assembly, no git)
+
+section("ChangeSetDocument")
+do {
+    func file(_ path: String, status: GitFileStatus = .modified) -> GitChangedFile {
+        GitChangedFile(
+            path: path,
+            repositoryPath: path,
+            url: URL(fileURLWithPath: "/repo/\(path)"),
+            oldPath: nil,
+            status: status
+        )
+    }
+    let doc = ChangeSetDocument.build(entries: [
+        .init(file: file("a.txt"), body: "line1\nline2\n", isPlaceholder: false),
+        .init(file: file("b/c.swift", status: .deleted), body: "only\n", isPlaceholder: false),
+    ])
+    let lines = doc.text.components(separatedBy: "\n")
+    check(lines.count == 6, "two sections assemble to six lines")
+    check(lines[0] == "\(ChangeSetDocument.expandedHeaderPrefix)a.txt", "first header on line 1")
+    check(lines[1] == "line1" && lines[2] == "line2", "body follows header")
+    check(lines[3] == "", "blank separator between sections")
+    check(lines[4] == "\(ChangeSetDocument.expandedHeaderPrefix)b/c.swift  ·  deleted", "second header carries status suffix")
+    check(doc.sections[0].headerLine == 1 && doc.sections[0].bodyStartLine == 2 && doc.sections[0].endLine == 4,
+          "first section line ranges")
+    check(doc.sections[1].headerLine == 5 && doc.sections[1].endLine == 6, "second section line ranges")
+    check(doc.section(containingLine: 3)?.file.path == "a.txt", "line lookup: body line")
+    check(doc.section(containingLine: 4)?.file.path == "a.txt", "line lookup: separator belongs to previous section")
+    check(doc.section(containingLine: 6)?.file.path == "b/c.swift", "line lookup: last line")
+    check(doc.section(containingLine: 7) == nil, "line lookup past end -> nil")
+    check(doc.section(containingLine: 0) == nil, "line lookup before start -> nil")
+    check(doc.section(for: URL(fileURLWithPath: "/repo/b/c.swift"))?.headerLine == 5, "url lookup finds section")
+    check(doc.section(for: URL(fileURLWithPath: "/repo/missing.txt")) == nil, "url lookup misses -> nil")
+
+    // Collapsed sections shrink to a single header line and keep the section map coherent.
+    let collapsed = ChangeSetDocument.build(
+        entries: [
+            .init(file: file("a.txt"), body: "line1\nline2\n", isPlaceholder: false),
+            .init(file: file("b/c.swift", status: .deleted), body: "only\n", isPlaceholder: false),
+        ],
+        collapsedPaths: ["a.txt"]
+    )
+    let collapsedLines = collapsed.text.components(separatedBy: "\n")
+    check(collapsedLines.count == 4, "collapsed section drops its body lines")
+    check(collapsedLines[0] == "\(ChangeSetDocument.collapsedHeaderPrefix)a.txt  ·  2 hidden lines",
+          "collapsed header shows hidden line count")
+    check(ChangeSetDocument.isHeaderLine(collapsedLines[0]) && ChangeSetDocument.isHeaderLine(collapsedLines[2]),
+          "both header prefixes are recognized")
+    check(collapsed.sections[0].isCollapsed && !collapsed.sections[1].isCollapsed, "collapse flags per section")
+    check(collapsed.sections[1].headerLine == 3, "following section shifts up")
+    check(collapsed.section(containingLine: 1)?.file.path == "a.txt", "collapsed header still maps to its file")
+    check(collapsed.section(containingLine: 4)?.file.path == "b/c.swift", "body after collapsed section maps correctly")
+}
+
+// MARK: - SideBySideDocument
+
+section("SideBySideDocument")
+do {
+    func file(_ path: String, status: GitFileStatus = .modified) -> GitChangedFile {
+        GitChangedFile(
+            path: path,
+            repositoryPath: path,
+            url: URL(fileURLWithPath: "/repo/\(path)"),
+            oldPath: nil,
+            status: status
+        )
+    }
+    let patch = """
+    diff --git a/src/x.ts b/src/x.ts
+    index 111..222 100644
+    --- a/src/x.ts
+    +++ b/src/x.ts
+    @@ -3,4 +3,5 @@ context
+     keep3
+    -old4
+    +new4
+    +new5
+     keep5
+    @@ -20,2 +21,2 @@
+     keep21
+    -old21
+    +new22
+    """
+
+    let doc = SideBySideDocument.build(entries: [
+        .init(file: file("src/x.ts"), body: patch, isPlaceholder: false),
+    ])
+    let left = doc.leftText.components(separatedBy: "\n")
+    let right = doc.rightText.components(separatedBy: "\n")
+
+    let headerRows = SideBySideDocument.headerRowCount
+
+    check(left.count == right.count, "left and right have identical row counts")
+    check(doc.leftKinds.count == left.count && doc.rightKinds.count == right.count,
+          "row metadata covers every row")
+    // Header block: empty rows on both sides (a real control is drawn over them).
+    check(headerRows == 2, "header block is two rows")
+    check(left[0].isEmpty && right[0].isEmpty && doc.leftKinds[0] == .fileHeader && doc.rightKinds[1] == .fileHeader,
+          "header rows are empty control placeholders")
+    check(!doc.rightText.contains("diff --git") && !doc.rightText.contains("+++"),
+          "patch metadata dropped")
+    // First body row: context "keep3" on both sides, real line numbers, markers stripped.
+    check(left[headerRows] == "keep3" && right[headerRows] == "keep3", "context row mirrored without markers")
+    check(doc.leftFileLines[headerRows] == 3 && doc.rightFileLines[headerRows] == 3, "context row carries file lines")
+    // Change block pairs old4 against new4.
+    check(left[headerRows + 1] == "old4" && right[headerRows + 1] == "new4", "deletion pairs with addition on one row")
+    check(doc.leftKinds[headerRows + 1] == .deletion && doc.rightKinds[headerRows + 1] == .addition, "paired row kinds")
+    check(doc.leftFileLines[headerRows + 1] == 4 && doc.rightFileLines[headerRows + 1] == 4, "paired row file lines")
+    // Surplus addition gets a filler on the left.
+    check(left[headerRows + 2].isEmpty && right[headerRows + 2] == "new5", "surplus addition faces a filler")
+    check(doc.leftKinds[headerRows + 2] == .filler && doc.rightKinds[headerRows + 2] == .addition, "filler kind on short side")
+    check(doc.rightFileLines[headerRows + 2] == 5 && doc.leftFileLines[headerRows + 2] == nil, "filler has no file line")
+    // Context realigns; hunk break; second hunk.
+    check(doc.rightFileLines[headerRows + 3] == 6, "context after additions realigns to new numbering")
+    check(doc.leftKinds[headerRows + 4] == .hunkBreak && left[headerRows + 4] == SideBySideDocument.hunkBreakMarker,
+          "hunk boundary rendered as a break row")
+    check(doc.leftFileLines[headerRows + 5] == 20 && doc.rightFileLines[headerRows + 5] == 21,
+          "second hunk restarts numbering")
+    check(left[headerRows + 6] == "old21" && right[headerRows + 6] == "new22", "second hunk change block pairs")
+
+    check(doc.section(containingLine: headerRows + 1)?.file.path == "src/x.ts", "row lookup finds section")
+    check(doc.section(forPath: "src/x.ts")?.language == "typescript", "section resolves language")
+    check(doc.sections[0].additions == 3 && doc.sections[0].deletions == 2, "section counts +3 −2")
+    check(doc.rowRange(forNewFileLines: 4...5, inSectionPath: "src/x.ts") == (headerRows + 2)...(headerRows + 3),
+          "comment file lines map back to rows")
+    check(doc.rowRange(forNewFileLines: 999...999, inSectionPath: "src/x.ts") == nil,
+          "unknown file lines map to no rows")
+
+    // Change navigation stops: GitHub's granularity — the first changed row of each hunk.
+    // The fixture has two hunks, so two stops, landing on old4/new4 and old21/new22.
+    check(doc.changeJumpTargets() == [headerRows + 2, headerRows + 7],
+          "split layout yields one jump target per hunk")
+
+    let unifiedDoc = SideBySideDocument.build(
+        entries: [.init(file: file("src/x.ts"), body: patch, isPlaceholder: false)],
+        layout: .unified
+    )
+    // Unified stacks the deletion above its additions; the hunk is still a single stop.
+    check(unifiedDoc.changeJumpTargets() == [headerRows + 2, headerRows + 8],
+          "unified layout yields one jump target per hunk")
+
+    // Two edit runs separated by context *within* one hunk merge into a single stop —
+    // per-row-run stops on a real branch produce hundreds of near-adjacent targets.
+    let clusteredPatch = """
+    diff --git a/src/y.ts b/src/y.ts
+    --- a/src/y.ts
+    +++ b/src/y.ts
+    @@ -3,5 +3,5 @@
+     keep3
+    -old4
+    +new4
+     keep5
+    -old6
+    +new6
+    """
+    let clustered = SideBySideDocument.build(
+        entries: [.init(file: file("src/y.ts"), body: clusteredPatch, isPlaceholder: false)]
+    )
+    check(clustered.changeJumpTargets() == [headerRows + 2],
+          "edit runs inside one hunk share a single jump target")
+    let clusteredUnified = SideBySideDocument.build(
+        entries: [.init(file: file("src/y.ts"), body: clusteredPatch, isPlaceholder: false)],
+        layout: .unified
+    )
+    check(clusteredUnified.changeJumpTargets() == [headerRows + 2],
+          "unified edit runs inside one hunk share a single jump target")
+    check(doc.highlightSpans == [SideBySideDocument.HighlightSpan(
+        startLine: headerRows + 1,
+        endLine: headerRows + 7,
+        language: "typescript"
+    )], "highlight span covers the body with the file's language")
+
+    // Unified layout: one column in patch order, deletions inline with old-file line numbers.
+    let unified = SideBySideDocument.build(
+        entries: [.init(file: file("src/x.ts"), body: patch, isPlaceholder: false)],
+        layout: .unified
+    )
+    let unifiedRows = unified.rightText.components(separatedBy: "\n")
+    check(unified.layout == .unified, "unified document remembers its layout")
+    check(unifiedRows[headerRows] == "keep3", "unified context row")
+    check(unifiedRows[headerRows + 1] == "old4" && unified.rightKinds[headerRows + 1] == .deletion,
+          "unified deletion appears inline")
+    check(unified.leftFileLines[headerRows + 1] == 4 && unified.rightFileLines[headerRows + 1] == nil,
+          "unified deletion carries old-file line only")
+    check(unifiedRows[headerRows + 2] == "new4" && unifiedRows[headerRows + 3] == "new5",
+          "unified additions follow deletions in patch order")
+    // Rows are 1-based: header block, keep3, old4, then the additions.
+    check(unified.rowRange(forNewFileLines: 4...5, inSectionPath: "src/x.ts")
+          == (headerRows + 3)...(headerRows + 4), "unified comment mapping via new-file lines")
+    check(unified.sections[0].additions == 3 && unified.sections[0].deletions == 2,
+          "unified section stats match")
+
+    // Collapsed sections shrink to just the header block.
+    let collapsed = SideBySideDocument.build(
+        entries: [
+            .init(file: file("src/x.ts"), body: patch, isPlaceholder: false),
+            .init(file: file("b.txt"), body: " ctx\n", isPlaceholder: false),
+        ],
+        collapsedPaths: ["src/x.ts"]
+    )
+    check(collapsed.sections[0].isCollapsed && collapsed.sections[0].endLine == headerRows + 1,
+          "collapsed section is just its header block (plus separator)")
+    check(collapsed.sections[0].hiddenLineCount == 14, "collapsed section reports hidden line count")
+    check(collapsed.sections[1].headerLine == headerRows + 2, "next section follows separator row")
+    // Section 1 is excluded by collapse; section 2 has no body rows to highlight.
+    check(collapsed.highlightSpans.isEmpty, "collapsed sections are not highlighted")
+}
+
+// MARK: - TSServerMessageBuffer
+
+section("TSServerMessageBuffer")
+do {
+    func frame(_ json: String) -> Data {
+        Data("Content-Length: \(json.utf8.count)\r\n\r\n\(json)".utf8)
+    }
+
+    var buffer = TSServerMessageBuffer()
+    let single = buffer.append(frame(#"{"seq":1}"#))
+    check(single.count == 1 && String(decoding: single[0], as: UTF8.self) == #"{"seq":1}"#,
+          "single complete frame parses")
+
+    // Split across arbitrary chunk boundaries.
+    var split = TSServerMessageBuffer()
+    let whole = frame(#"{"a":1}"#) + Data("\r\n".utf8) + frame(#"{"b":2}"#)
+    var collected: [Data] = []
+    for byte in whole {
+        collected += split.append(Data([byte]))
+    }
+    check(collected.count == 2, "byte-by-byte feed yields both frames")
+    check(String(decoding: collected[1], as: UTF8.self) == #"{"b":2}"#, "second frame content intact")
+
+    var partial = TSServerMessageBuffer()
+    check(partial.append(Data("Content-Length: 100\r\n\r\n{".utf8)).isEmpty, "incomplete body waits")
+}
+
+// MARK: - ChangeSetViewStateStore
+
+section("ChangeSetViewStateStore")
+do {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("myide-viewstate-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: tmp) }
+
+    let store = ChangeSetViewStateStore(rootURL: URL(fileURLWithPath: "/repo"), branchName: "feature", storageRoot: tmp)
+    check(store.load() == .empty, "missing state loads as empty")
+
+    store.save(ChangeSetViewState(collapsedPaths: ["a.txt", "b/c.ts"], anchorPath: "b/c.ts", anchorLineOffset: 12))
+    let loaded = store.load()
+    check(loaded.collapsedPaths == ["a.txt", "b/c.ts"], "collapsed paths round-trip")
+    check(loaded.anchorPath == "b/c.ts" && loaded.anchorLineOffset == 12, "anchor round-trips")
+
+    let otherBranch = ChangeSetViewStateStore(rootURL: URL(fileURLWithPath: "/repo"), branchName: "main", storageRoot: tmp)
+    check(otherBranch.load() == .empty, "state is branch-scoped")
+}
+
+// MARK: - ReviewComments
+
+section("ReviewComments")
+do {
+    let first = ReviewComment(
+        filePath: "src/app.ts",
+        origin: .diff,
+        startLine: 4,
+        endLine: 5,
+        codeText: "+const x = 1\n+use(x)",
+        body: "Rename x to something meaningful."
+    )
+    let second = ReviewComment(
+        filePath: "src/lib.ts",
+        origin: .source,
+        startLine: 12,
+        endLine: 12,
+        codeText: "export function greet(name: string): string {",
+        body: "Add a doc comment."
+    )
+
+    let formatted = ReviewCommentFormatter.format(comments: [first, second])
+    check(formatted.hasPrefix("Apply the following 2 code review comments:"), "formatter leads with the ask")
+    check(formatted.contains("1. src/app.ts (diff lines 4–5)"), "diff comment labeled with patch lines")
+    check(formatted.contains("2. src/lib.ts (line 12)"), "source comment labeled with file line")
+    check(formatted.contains("+const x = 1\n+use(x)"), "selected code embedded verbatim")
+    check(formatted.contains("Rename x to something meaningful."), "comment body embedded")
+    check(ReviewCommentFormatter.format(comments: []).isEmpty, "no comments -> empty string")
+
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("myide-comments-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: tmp) }
+
+    let store = ReviewCommentStore(rootURL: URL(fileURLWithPath: "/repo"), branchName: "feature", storageRoot: tmp)
+    check(store.load().isEmpty, "missing comments load as empty")
+    store.save([first, second])
+    let loaded = store.load()
+    check(loaded == [first, second], "comments round-trip through disk")
+    check(ReviewCommentStore(rootURL: URL(fileURLWithPath: "/repo"), branchName: "main", storageRoot: tmp)
+        .load().isEmpty, "comments are branch-scoped")
+}
+
+// MARK: - TSServer live (gated: needs a fixture with node_modules/typescript)
+// Run with MYIDE_TS_FIXTURE=/path/to/ts-project to exercise the real tsserver end to end.
+
+section("TSServer live")
+if let fixturePath = ProcessInfo.processInfo.environment["MYIDE_TS_FIXTURE"] {
+    let fixtureURL = URL(fileURLWithPath: fixturePath, isDirectory: true)
+    if let toolchain = TSServer.discoverToolchain(projectRoot: fixtureURL) {
+        check(true, "discovers node (\(toolchain.nodeURL.lastPathComponent)) and tsserver")
+        do {
+            let server = try TSServer(toolchain: toolchain)
+            defer { server.shutdown() }
+            let mainTS = fixtureURL.appendingPathComponent("src/main.ts").path
+            // `greet` on line 2, column 1 of src/main.ts → definition in src/lib.ts line 1.
+            let result = server.definition(file: mainTS, line: 2, offset: 1, timeout: 30)
+            switch result {
+            case .success(let spans):
+                check(spans.first?.file.hasSuffix("src/lib.ts") == true, "definition resolves to src/lib.ts")
+                check(spans.first?.line == 1, "definition points at the declaration line")
+            case .failure(let error):
+                check(false, "definition lookup succeeded (\(error))")
+            }
+            // Import specifier: clicking `./lib` on line 1 should land in lib.ts too.
+            let importResult = server.definition(file: mainTS, line: 1, offset: 25, timeout: 30)
+            if case .success(let spans) = importResult {
+                check(spans.first?.file.hasSuffix("lib.ts") == true, "import specifier resolves to the module file")
+            } else {
+                check(false, "import specifier resolves to the module file")
+            }
+
+            // References from the declaration: `greet` in lib.ts line 1 col 17 is the decl;
+            // main.ts uses it three times (import + two calls).
+            let libTS = fixtureURL.appendingPathComponent("src/lib.ts").path
+            let refsResult = server.references(file: libTS, line: 1, offset: 17, timeout: 30)
+            if case .success(let payload) = refsResult {
+                check(payload.symbolName == "greet", "references reports the symbol name")
+                let usages = payload.references.filter { !$0.isDefinition }
+                check(usages.count >= 2, "references finds usages beyond the declaration")
+                check(payload.references.contains { $0.isDefinition && $0.file.hasSuffix("lib.ts") },
+                      "references flags the declaration")
+                check(usages.allSatisfy { $0.file.hasSuffix("main.ts") }, "usages point at the caller file")
+            } else {
+                check(false, "references lookup succeeds")
+            }
+        } catch {
+            check(false, "tsserver spawns (\(error))")
+        }
+    } else {
+        check(false, "discovers node and tsserver for fixture")
+    }
+} else {
+    print("  skip set MYIDE_TS_FIXTURE to run against a real tsserver")
+}
+
 // MARK: - GitChangeSet
 
 section("GitChangeSet")
@@ -287,6 +637,115 @@ do {
         check(nestedContext.files.map(\.path) == ["changed.swift"], "filters changes to opened subdirectory")
     } else {
         check(false, "loads nested Git change context")
+    }
+
+    // Combined change-set document over the same repo.
+    if case .repository(let context) = GitChangeSet.load(for: tmp) {
+        let document = GitChangeSet.loadDocument(for: context)
+        check(document.sections.count == context.files.count, "document has one section per changed file")
+        check(document.sections.map(\.file.path) == context.files.map(\.path), "document sections preserve sidebar order")
+        check(document.text.contains("\(ChangeSetDocument.expandedHeaderPrefix)added.txt"), "document contains untracked file header")
+        check(document.text.contains("+draft"), "document embeds untracked file patch")
+        check(document.text.contains("-old"), "document embeds deleted file patch")
+
+        if let section = document.section(for: nested.appendingPathComponent("changed.swift")) {
+            check(document.section(containingLine: section.headerLine)?.file.path == section.file.path,
+                  "header line maps back to its section")
+            check(document.section(containingLine: section.bodyStartLine)?.file.path == section.file.path,
+                  "body line maps back to its section")
+        } else {
+            check(false, "document section lookup by URL")
+        }
+
+        // Whole-file texts captured for line-mapped syntax highlighting.
+        let entries = GitChangeSet.loadDocumentEntries(for: context)
+        if let changed = entries.first(where: { $0.file.path == "nested/changed.swift" }) {
+            check(changed.oldText?.contains("base") == true, "entry captures base version text")
+            check(changed.newText?.contains("changed") == true, "entry captures working tree text")
+        } else {
+            check(false, "entry captures file texts")
+        }
+        check(entries.first(where: { $0.file.path == "added.txt" })?.oldText == nil,
+              "untracked file has no base text")
+        check(entries.first(where: { $0.file.path == "old.txt" })?.newText == nil,
+              "deleted file has no working tree text")
+    } else {
+        check(false, "reloads context for document tests")
+    }
+
+    // Commit picker source: the branch's commits since the discovered base, newest first.
+    let listed = GitChangeSet.listCommits(for: tmp)
+    check(listed.count == 1, "listCommits returns only the branch's commits")
+    check(listed.first?.subject == "feature change", "listCommits captures the subject")
+    check(listed.first.map { $0.sha.hasPrefix($0.shortSHA) } == true, "listCommits pairs sha and short sha")
+
+    // Scoped loads: exactly one commit, or everything since an explicit base.
+    // Fixture at this point: commit 1 = {old.txt, nested/changed.swift(base)} on main;
+    // commit 2 (feature, HEAD) changed nested/changed.swift; the working tree has
+    // added.txt untracked and old.txt deleted.
+    let headSha = runGit(["rev-parse", "HEAD"], in: tmp)?.stdout
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if case .repository(let commitContext) = GitChangeSet.load(for: tmp, scope: .commit("HEAD")) {
+        check(commitContext.files.map(\.path) == ["nested/changed.swift"],
+              "commit scope lists only that commit's files (no working-tree noise)")
+        check(commitContext.scope == .commit(headSha), "commit scope pins the resolved SHA")
+        check(commitContext.commitSummary?.contains("feature change") == true,
+              "commit scope captures the commit summary")
+
+        let document = GitChangeSet.loadDocument(for: commitContext)
+        check(document.text.contains("+changed") && document.text.contains("-base"),
+              "commit-scoped document embeds exactly that commit's patch")
+        check(!document.text.contains("added.txt"), "commit-scoped document omits untracked files")
+
+        let entries = GitChangeSet.loadDocumentEntries(for: commitContext)
+        check(entries.first?.newText == "changed\n",
+              "commit scope reads the new side from the commit, not the disk")
+    } else {
+        check(false, "loads commit-scoped context")
+    }
+
+    // A root commit has no parent: it diffs against the empty tree, so its files are added.
+    let rootSha = runGit(["rev-parse", "HEAD^"], in: tmp)?.stdout
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if case .repository(let rootCommitContext) = GitChangeSet.load(for: tmp, scope: .commit(rootSha)) {
+        check(Set(rootCommitContext.files.map(\.path)) == ["old.txt", "nested/changed.swift"],
+              "root-commit scope lists the initial files")
+        check(rootCommitContext.files.allSatisfy { $0.status == .added },
+              "root-commit files diff against the empty tree as added")
+    } else {
+        check(false, "loads root-commit-scoped context")
+    }
+
+    if case .repository(let sinceContext) = GitChangeSet.load(for: tmp, scope: .since("main")) {
+        check(sinceContext.baseRef == "main", "since scope uses the literal base ref")
+        let paths = Set(sinceContext.files.map(\.path))
+        check(paths.contains("nested/changed.swift") && paths.contains("added.txt"),
+              "since scope includes branch and working-tree changes")
+    } else {
+        check(false, "loads since-scoped context")
+    }
+
+    if case .notRepository(let message) = GitChangeSet.load(for: tmp, scope: .commit("no-such-ref")) {
+        check(message.contains("no-such-ref"), "unknown commit ref surfaces as a load error")
+    } else {
+        check(false, "unknown commit ref surfaces as a load error")
+    }
+    if case .notRepository(let message) = GitChangeSet.load(for: tmp, scope: .since("no-such-ref")) {
+        check(message.contains("no-such-ref"), "unknown base ref surfaces as a load error")
+    } else {
+        check(false, "unknown base ref surfaces as a load error")
+    }
+
+    // Regression: diffs larger than the ~64 KB pipe buffer used to deadlock runGit
+    // (waitUntilExit before draining the pipe). This check *hangs* on regression.
+    let bigLine = String(repeating: "x", count: 120) + "\n"
+    try! String(repeating: bigLine, count: 3000) // ~360 KB
+        .write(to: tmp.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+    if case .repository(let bigContext) = GitChangeSet.load(for: tmp),
+       case .diff(let bigDiff) = GitChangeSet.loadDiff(for: tmp.appendingPathComponent("big.txt"), in: bigContext) {
+        check(bigDiff.patch.utf8.count > 64 * 1024, "large untracked diff loads past the 64 KB pipe buffer")
+    } else {
+        check(false, "large untracked diff loads past the 64 KB pipe buffer")
     }
 }
 

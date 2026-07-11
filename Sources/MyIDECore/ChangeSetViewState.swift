@@ -1,22 +1,31 @@
 import Foundation
 
-struct AssistantPersistedState: Codable, Equatable {
-    var selectedThreadID: SelectionChatThread.ID?
-    var threads: [SelectionChatThread]
-    var fixes: [PromptFixItem]
+/// Review-progress state for one branch change set: which files are collapsed (reviewed) and
+/// where the reader left off. Restored when the same repo+branch is opened again.
+public struct ChangeSetViewState: Codable, Equatable, Sendable {
+    /// Display paths (relative to the opened root) of files whose diffs are collapsed.
+    public var collapsedPaths: [String]
+    /// Display path of the file that was at the top of the viewport.
+    public var anchorPath: String?
+    /// 0-based line offset from that file's header line (collapse-independent).
+    public var anchorLineOffset: Int?
 
-    static let empty = AssistantPersistedState(
-        selectedThreadID: nil,
-        threads: [],
-        fixes: []
-    )
+    public init(collapsedPaths: [String] = [], anchorPath: String? = nil, anchorLineOffset: Int? = nil) {
+        self.collapsedPaths = collapsedPaths
+        self.anchorPath = anchorPath
+        self.anchorLineOffset = anchorLineOffset
+    }
+
+    public static let empty = ChangeSetViewState()
 }
 
-struct AssistantPersistenceStore: Equatable {
-    let id: String
+/// Disk-backed store for `ChangeSetViewState`, keyed by repo root + branch (same scoping as
+/// `ReviewCommentStore`, separate directory).
+public struct ChangeSetViewStateStore: Equatable {
+    public let id: String
     private let fileURL: URL
 
-    init(rootURL: URL, branchName: String, storageRoot: URL? = nil) {
+    public init(rootURL: URL, branchName: String, storageRoot: URL? = nil) {
         let resolvedRoot = rootURL.standardizedFileURL.resolvingSymlinksInPath()
         let scope = "\(resolvedRoot.path)#\(branchName)"
         self.id = Self.stableHexID(for: scope)
@@ -27,27 +36,14 @@ struct AssistantPersistenceStore: Equatable {
             .appendingPathExtension("json")
     }
 
-    func load() -> AssistantPersistedState {
+    public func load() -> ChangeSetViewState {
         guard let data = try? Data(contentsOf: fileURL) else {
             return .empty
         }
-        return (try? JSONDecoder().decode(AssistantPersistedState.self, from: data)) ?? .empty
+        return (try? JSONDecoder().decode(ChangeSetViewState.self, from: data)) ?? .empty
     }
 
-    func saveThreads(_ threads: [SelectionChatThread], selectedThreadID: SelectionChatThread.ID?) {
-        var state = load()
-        state.threads = threads
-        state.selectedThreadID = selectedThreadID
-        save(state)
-    }
-
-    func saveFixes(_ fixes: [PromptFixItem]) {
-        var state = load()
-        state.fixes = fixes
-        save(state)
-    }
-
-    func save(_ state: AssistantPersistedState) {
+    public func save(_ state: ChangeSetViewState) {
         do {
             let directory = fileURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -57,7 +53,7 @@ struct AssistantPersistenceStore: Equatable {
             try data.write(to: fileURL, options: [.atomic])
         } catch {
             #if DEBUG
-            fputs("MyIDE assistant persistence failed: \(error)\n", stderr)
+            fputs("MyIDE change-set view state persistence failed: \(error)\n", stderr)
             #endif
         }
     }
@@ -65,7 +61,7 @@ struct AssistantPersistenceStore: Equatable {
     private static func defaultStorageRoot() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return base.appendingPathComponent("MyIDE/AssistantState", isDirectory: true)
+        return base.appendingPathComponent("MyIDE/ChangeSetViewState", isDirectory: true)
     }
 
     private static func stableHexID(for text: String) -> String {

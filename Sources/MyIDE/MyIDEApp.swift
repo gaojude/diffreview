@@ -10,15 +10,9 @@ struct MyIDEApp: App {
 
     @MainActor
     init() {
-        if CommandLine.arguments.contains("--selection-chat-pane-self-test") {
-            Self.runSelectionChatPaneSelfTest()
+        if CommandLine.arguments.contains("--comments-pane-self-test") {
+            Self.runCommentsPaneSelfTest()
             Foundation.exit(0)
-        }
-        if CommandLine.arguments.contains("--selection-chat-agent-self-test") {
-            Self.runSelectionChatAgentSelfTestAndExit()
-        }
-        if CommandLine.arguments.contains("--selection-chat-agent-live-test") {
-            Self.runSelectionChatAgentLiveTestAndExit()
         }
 
         let rootURL = Self.rootURL()
@@ -48,6 +42,70 @@ struct MyIDEApp: App {
         }
     }
 
+    /// Headless harness for the review-comments flow: drives the real controller through
+    /// draft → commit → copy and lays out the pane, without needing a window or Accessibility
+    /// permission. Run via `MyIDE --comments-pane-self-test`; exits non-zero on failure.
+    @MainActor
+    private static func runCommentsPaneSelfTest() {
+        func fail(_ message: String, code: Int32) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            Foundation.exit(code)
+        }
+
+        let controller = ReviewCommentsController()
+        controller.beginDraft(CommentDraft(
+            filePath: "src/main.ts",
+            origin: .diff,
+            startLine: 2,
+            endLine: 2,
+            codeText: "+greet"
+        ))
+        guard controller.draft != nil else {
+            fail("comments pane: draft did not start", code: 2)
+        }
+
+        controller.draftText = "   " // whitespace only must not commit
+        guard controller.commitDraft() == nil, controller.draft != nil else {
+            fail("comments pane: empty comment was accepted", code: 3)
+        }
+
+        controller.draftText = "Give this a doc comment."
+        guard let committed = controller.commitDraft(),
+              controller.comments.count == 1,
+              controller.draft == nil,
+              controller.selectedCommentID == committed.id else {
+            fail("comments pane: commit did not produce a selected comment", code: 4)
+        }
+
+        // Exercise the clipboard export, then put the user's clipboard back.
+        let previousClipboard = NSPasteboard.general.string(forType: .string)
+        controller.copyAllToPasteboard()
+        let copied = NSPasteboard.general.string(forType: .string) ?? ""
+        if let previousClipboard {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(previousClipboard, forType: .string)
+        }
+        guard copied.contains("src/main.ts"),
+              copied.contains("+greet"),
+              copied.contains("Give this a doc comment.") else {
+            fail("comments pane: clipboard export missing content", code: 5)
+        }
+
+        let host = NSHostingView(rootView: CommentsPaneView(controller: controller, fontSize: FontSizes.default))
+        host.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
+        host.layoutSubtreeIfNeeded()
+        guard host.fittingSize.width > 0, host.fittingSize.height > 0 else {
+            fail("comments pane: no visible layout", code: 6)
+        }
+
+        controller.delete(committed.id)
+        guard controller.comments.isEmpty, controller.selectedCommentID == nil else {
+            fail("comments pane: delete did not clear state", code: 7)
+        }
+
+        print("comments pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
+    }
+
     private static func rootURL() -> URL {
         // The `my-ide` shim passes an absolute directory as argv[1]; fall back to the
         // process working directory (and to that dir even if resolution fails).
@@ -58,288 +116,6 @@ struct MyIDEApp: App {
         ) ?? URL(fileURLWithPath: cwd, isDirectory: true)
     }
 
-    private static func runSelectionChatPaneSelfTest() {
-        let chat = SelectionChatController()
-        let rootURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-        let context = CodeSelectionContext(
-            fileURL: rootURL.appendingPathComponent("src/index.ts"),
-            contentKind: .source,
-            startLine: 1,
-            endLine: 3,
-            text: "export function answer(value: number) {\n  return value * 2\n}"
-        )
-        chat.setContext(context: context, rootURL: rootURL)
-        chat.draft = "What changed here?"
-        guard chat.canSubmit else {
-            writeSelfTestError("selection chat pane did not accept selected context")
-            Foundation.exit(2)
-        }
-
-        let references = CodeReferenceParser.references(in: """
-        See packages/next/src/client/components/router-reducer/ppr-navigations.ts:
-        - `:1001-1003`
-        """)
-        guard references.contains(CodeReference(
-            path: "packages/next/src/client/components/router-reducer/ppr-navigations.ts",
-            startLine: 1001,
-            endLine: 1003
-        )) else {
-            writeSelfTestError("selection chat code reference parser failed")
-            Foundation.exit(3)
-        }
-
-        let tsxReferences = CodeReferenceParser.references(in: """
-        <Link> clicks: packages/next/src/client/app-dir/link.tsx:303-313
-        """)
-        guard tsxReferences == [
-            CodeReference(
-                path: "packages/next/src/client/app-dir/link.tsx",
-                startLine: 303,
-                endLine: 313
-            ),
-        ] else {
-            writeSelfTestError("selection chat tsx code reference parser failed: \(tsxReferences)")
-            Foundation.exit(4)
-        }
-
-        let host = NSHostingView(rootView: SelectionChatPaneView(chat: chat, fontSize: FontSizes.default))
-        host.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
-        host.layoutSubtreeIfNeeded()
-        guard host.fittingSize.width > 0, host.fittingSize.height > 0 else {
-            writeSelfTestError("selection chat pane did not produce a visible layout")
-            Foundation.exit(5)
-        }
-
-        print("selection chat pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
-    }
-
-    private static func runSelectionChatAgentSelfTestAndExit() -> Never {
-        Task { @MainActor in
-            let exitCode = await runSelectionChatAgentSelfTest()
-            Foundation.exit(Int32(exitCode))
-        }
-        RunLoop.main.run()
-        fatalError("RunLoop.main.run() unexpectedly returned")
-    }
-
-    private static func runSelectionChatAgentLiveTestAndExit() -> Never {
-        Task { @MainActor in
-            let exitCode = await runSelectionChatAgentLiveTest()
-            Foundation.exit(Int32(exitCode))
-        }
-        RunLoop.main.run()
-        fatalError("RunLoop.main.run() unexpectedly returned")
-    }
-
-    @MainActor
-    private static func runSelectionChatAgentSelfTest() async -> Int {
-        var failures = 0
-        func check(_ condition: Bool, _ message: String) {
-            if condition {
-                print("ok \(message)")
-            } else {
-                failures += 1
-                print("FAIL \(message)")
-            }
-        }
-
-        let fm = FileManager.default
-        let tmp = fm.temporaryDirectory.appendingPathComponent("myide-agent-selftest-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
-            defer { try? fm.removeItem(at: tmp) }
-
-            let fileURL = tmp.appendingPathComponent("Example.swift")
-            try """
-            func pageShellEventName() -> String {
-                "page_shell"
-            }
-            """.write(to: fileURL, atomically: true, encoding: .utf8)
-
-            let context = CodeSelectionContext(
-                fileURL: fileURL,
-                contentKind: .source,
-                startLine: 1,
-                endLine: 3,
-                text: "func pageShellEventName() -> String {\n    \"page_shell\"\n}"
-            )
-
-            let client = StreamingCodeAgentClient()
-            var normalDeltas = ""
-            var normalTools: [AgentToolEvent] = []
-            let normalReply = try await client.ask(
-                question: "Is this name misleading?",
-                context: context,
-                rootURL: tmp,
-                onProgress: { _ in },
-                onToolEvent: { event in normalTools.append(event) },
-                onDelta: { delta in normalDeltas += delta }
-            )
-            check(normalReply.contains("instrumentation"), "mock chat returns final streamed answer")
-            check(normalDeltas == normalReply, "streamed deltas match final answer")
-            check(normalTools.contains(where: { $0.name == "get_git_diff" && $0.status == .finished }), "agent executes diff tool")
-
-            var capturedProposal: AgentFixProposal?
-            let fixReply = try await client.ask(
-                question: "Please fix the misleading name.",
-                context: context,
-                rootURL: tmp,
-                forceFixCapture: true,
-                onProgress: { _ in },
-                onToolEvent: { _ in },
-                onDelta: { _ in },
-                onFixProposal: { proposal in capturedProposal = proposal }
-            )
-            check(fixReply.contains("Captured"), "mock fix run returns final capture acknowledgement")
-            check(capturedProposal?.prompt.contains("Rename") == true, "fix proposal comes from capture_fix tool")
-
-            do {
-                _ = try await client.ask(
-                    question: "credit-error",
-                    context: context,
-                    rootURL: tmp,
-                    onProgress: { _ in },
-                    onToolEvent: { _ in },
-                    onDelta: { _ in }
-                )
-                check(false, "provider stream errors surface")
-            } catch {
-                check(error.localizedDescription.contains("insufficient_quota"), "provider stream errors surface")
-            }
-
-            let snapshot = PromptFixSnapshot(
-                rootURL: tmp,
-                context: context,
-                contextLabel: context.locationLabel,
-                requestedChange: capturedProposal?.summary ?? "Rename it",
-                exchanges: [
-                    SelectionChatExchange(
-                        question: "Please fix the misleading name.",
-                        answer: fixReply,
-                        contextLabel: context.locationLabel,
-                        context: context
-                    ),
-                ]
-            )
-            let fix = PromptFixItem(
-                proposal: capturedProposal ?? AgentFixProposal(
-                    title: "Rename page shell instrumentation",
-                    summary: "Rename the instrumentation label.",
-                    prompt: "Rename the instrumentation label."
-                ),
-                snapshot: snapshot
-            )
-            let thread = SelectionChatThread(
-                title: "Naming chat",
-                contextLabel: context.locationLabel,
-                exchanges: snapshot.exchanges
-            )
-            let storageRoot = tmp.appendingPathComponent("state", isDirectory: true)
-            let featureStore = AssistantPersistenceStore(rootURL: tmp, branchName: "feature", storageRoot: storageRoot)
-            featureStore.save(AssistantPersistedState(
-                selectedThreadID: thread.id,
-                threads: [thread],
-                fixes: [fix]
-            ))
-            let loaded = featureStore.load()
-            check(loaded.threads.first?.title == "Naming chat", "chat thread persists")
-            check(loaded.fixes.first?.prompt == fix.prompt, "fix persists")
-
-            let otherBranchStore = AssistantPersistenceStore(rootURL: tmp, branchName: "other", storageRoot: storageRoot)
-            check(otherBranchStore.load().threads.isEmpty, "assistant state is branch-scoped")
-        } catch {
-            failures += 1
-            print("FAIL agent self-test threw \(error)")
-        }
-
-        if failures == 0 {
-            print("selection chat agent ok")
-            return 0
-        }
-        print("selection chat agent failed: \(failures)")
-        return 1
-    }
-
-    @MainActor
-    private static func runSelectionChatAgentLiveTest() async -> Int {
-        var failures = 0
-        func check(_ condition: Bool, _ message: String) {
-            if condition {
-                print("ok \(message)")
-            } else {
-                failures += 1
-                print("FAIL \(message)")
-            }
-        }
-
-        let fm = FileManager.default
-        let tmp = fm.temporaryDirectory.appendingPathComponent("myide-live-agent-test-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
-            defer { try? fm.removeItem(at: tmp) }
-
-            let fileURL = tmp.appendingPathComponent("InstrumentationNaming.swift")
-            try """
-            enum InstrumentationNaming {
-                static let pageShell = "page_shell"
-            }
-            """.write(to: fileURL, atomically: true, encoding: .utf8)
-
-            let context = CodeSelectionContext(
-                fileURL: fileURL,
-                contentKind: .source,
-                startLine: 1,
-                endLine: 3,
-                text: "enum InstrumentationNaming {\n    static let pageShell = \"page_shell\"\n}"
-            )
-
-            let client = StreamingCodeAgentClient()
-            var answerDeltas = ""
-            var toolEvents: [AgentToolEvent] = []
-            let answer = try await client.ask(
-                question: "In one concise sentence, say whether page shell sounds misleading for an instrumentation-only name.",
-                context: context,
-                rootURL: tmp,
-                onProgress: { _ in },
-                onToolEvent: { event in toolEvents.append(event) },
-                onDelta: { delta in answerDeltas += delta }
-            )
-            check(!answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Claude returns a non-empty chat answer")
-            check(answerDeltas == answer, "Claude answer streams through deltas")
-            check(toolEvents.contains(where: { $0.name == "get_git_diff" && $0.status == .finished }), "Claude run executes get_git_diff")
-
-            var proposal: AgentFixProposal?
-            var fixToolEvents: [AgentToolEvent] = []
-            let fixAnswer = try await client.ask(
-                question: "Create a fix proposal for renaming this instrumentation-only page shell label.",
-                context: context,
-                rootURL: tmp,
-                forceFixCapture: true,
-                onProgress: { _ in },
-                onToolEvent: { event in fixToolEvents.append(event) },
-                onDelta: { _ in },
-                onFixProposal: { proposal = $0 }
-            )
-            check(!fixAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Claude returns a final fix acknowledgement")
-            check(fixToolEvents.contains(where: { $0.name == "capture_fix" && $0.status == .finished }), "Claude calls capture_fix")
-            check(proposal?.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false, "Claude provides a fix title")
-            check(proposal?.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false, "Claude provides a fix prompt")
-        } catch {
-            failures += 1
-            print("FAIL live Claude agent test threw \(error.localizedDescription)")
-        }
-
-        if failures == 0 {
-            print("selection chat live agent ok")
-            return 0
-        }
-        print("selection chat live agent failed: \(failures)")
-        return 1
-    }
-
-    private static func writeSelfTestError(_ message: String) {
-        FileHandle.standardError.write(Data((message + "\n").utf8))
-    }
 }
 
 /// Keeps the packaged app behaving like a normal foreground Mac app.
@@ -360,7 +136,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        NSLog("MyIDE lifecycle: last window closed — terminating")
+        return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        NSLog("MyIDE lifecycle: applicationWillTerminate (windows=%d)", NSApp.windows.count)
     }
 }
 
@@ -400,7 +181,11 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
         window.representedURL = rootURL
         window.minSize = NSSize(width: 1_060, height: 520)
         window.toolbarStyle = .unified
-        window.contentViewController = NSHostingController(rootView: content)
+        let hosting = NSHostingController(rootView: content)
+        // The window is created manually (not by a SwiftUI scene), so the root view's
+        // `.toolbar`/`.navigationTitle` need explicit bridging onto the NSWindow.
+        hosting.sceneBridgingOptions = [.toolbars, .title]
+        window.contentViewController = hosting
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.setFrame(Self.initialWindowFrame(), display: false)
@@ -453,6 +238,7 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         if notification.object as? NSWindow === projectWindow {
+            NSLog("MyIDE lifecycle: project window closing")
             projectWindow = nil
         }
     }

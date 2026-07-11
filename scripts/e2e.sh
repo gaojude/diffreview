@@ -50,8 +50,8 @@ if command -v git >/dev/null 2>&1; then
   printf 'export const draft = true;\n' > "$FIX/src/draft.ts"
 fi
 
-echo "▸ [3/4] Selection chat pane harness"
-"$APP/Contents/MacOS/MyIDE" --selection-chat-pane-self-test
+echo "▸ [3/4] Comments pane harness"
+"$APP/Contents/MacOS/MyIDE" --comments-pane-self-test
 
 echo "▸ [4/4] Launch on fixture: $FIX"
 open -n "$APP" --args "$FIX"

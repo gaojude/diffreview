@@ -38,6 +38,32 @@ public struct GitChangedFile: Equatable, Hashable, Sendable {
     }
 }
 
+/// What the window diffs. `.branch` is the default review view: everything the branch and
+/// working tree changed vs the discovered base. The other cases scope the document to an
+/// explicit diff, so "open that diff" works for a single commit or an arbitrary base:
+/// `.commit` shows exactly one commit (no working-tree noise), `.since` shows everything
+/// after a caller-chosen ref (working tree included).
+public enum GitDiffScope: Equatable, Hashable, Sendable {
+    case branch
+    case since(String)
+    case commit(String)
+}
+
+/// One commit in the branch's history, as listed by the in-app commit picker.
+public struct GitCommitSummary: Equatable, Sendable, Identifiable {
+    public let sha: String
+    public let shortSHA: String
+    public let subject: String
+
+    public var id: String { sha }
+
+    public init(sha: String, shortSHA: String, subject: String) {
+        self.sha = sha
+        self.shortSHA = shortSHA
+        self.subject = subject
+    }
+}
+
 /// The branch-scoped set of files shown in the sidebar.
 public struct GitChangeContext: Equatable, Sendable {
     public let repositoryRootURL: URL
@@ -46,6 +72,12 @@ public struct GitChangeContext: Equatable, Sendable {
     public let baseRef: String?
     public let upstreamRef: String?
     public let files: [GitChangedFile]
+    /// The scope this context was loaded with. `.commit` carries the *resolved* full SHA so
+    /// every downstream `git` call pins the same object even if the branch moves.
+    public let scope: GitDiffScope
+    /// For `.commit` scope: `"<short-sha>  <subject>"`, used as the window title so the
+    /// reviewed commit is visible in the UI. `nil` for other scopes.
+    public let commitSummary: String?
 
     public init(
         repositoryRootURL: URL,
@@ -53,7 +85,9 @@ public struct GitChangeContext: Equatable, Sendable {
         branchName: String,
         baseRef: String?,
         upstreamRef: String?,
-        files: [GitChangedFile]
+        files: [GitChangedFile],
+        scope: GitDiffScope = .branch,
+        commitSummary: String? = nil
     ) {
         self.repositoryRootURL = repositoryRootURL
         self.openedRootURL = openedRootURL
@@ -61,6 +95,8 @@ public struct GitChangeContext: Equatable, Sendable {
         self.baseRef = baseRef
         self.upstreamRef = upstreamRef
         self.files = files
+        self.scope = scope
+        self.commitSummary = commitSummary
     }
 }
 
@@ -91,7 +127,11 @@ public enum GitDiffLoadResult: Equatable, Sendable {
 public enum GitChangeSet {
     public static let maxPatchSize: Int = 5 * 1024 * 1024
 
-    public static func load(for openedRootURL: URL) -> GitChangeLoadResult {
+    /// Git's well-known empty-tree object: the diff base for a root commit (which has
+    /// no parent to diff against).
+    static let emptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    public static func load(for openedRootURL: URL, scope: GitDiffScope = .branch) -> GitChangeLoadResult {
         let openedRoot = openedRootURL.standardizedFileURL.resolvingSymlinksInPath()
         guard let repositoryRoot = repositoryRoot(for: openedRoot) else {
             return .notRepository("No Git repository found.")
@@ -99,21 +139,59 @@ public enum GitChangeSet {
 
         let branchName = currentBranch(in: repositoryRoot)
         let upstreamRef = optionalOutput(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], in: repositoryRoot)
-        let baseRef = discoverBaseRef(upstreamRef: upstreamRef, in: repositoryRoot)
         let openedPrefix = repositoryRelativePath(for: openedRoot, repositoryRoot: repositoryRoot)
+
+        // Resolve the scope into (baseRef, endRef, working tree yes/no). `.commit` pins the
+        // resolved SHA; both explicit scopes surface a bad ref as a load error instead of
+        // silently falling back to the discovered base.
+        let baseRef: String?
+        var endRef: String? = nil
+        var includeWorkingTree = true
+        var resolvedScope: GitDiffScope = .branch
+        var commitSummary: String? = nil
+        switch scope {
+        case .branch:
+            baseRef = discoverBaseRef(upstreamRef: upstreamRef, in: repositoryRoot)
+        case .since(let ref):
+            guard refExists(ref, in: repositoryRoot) else {
+                return .notRepository("Unknown base ref: \(ref)")
+            }
+            baseRef = ref
+            resolvedScope = .since(ref)
+        case .commit(let ref):
+            guard let sha = optionalOutput(["rev-parse", "--verify", "--quiet", "\(ref)^{commit}"], in: repositoryRoot) else {
+                return .notRepository("Unknown commit: \(ref)")
+            }
+            // A root commit has no parent; diff it against Git's empty tree.
+            baseRef = optionalOutput(["rev-parse", "--verify", "--quiet", "\(sha)^"], in: repositoryRoot) ?? emptyTreeHash
+            endRef = sha
+            includeWorkingTree = false
+            resolvedScope = .commit(sha)
+            commitSummary = optionalOutput(["log", "-1", "--format=%h  %s", sha], in: repositoryRoot)
+        }
 
         var changesByPath: [String: GitChangedFile] = [:]
 
         if let baseRef {
-            let branchDiff = runGit(["diff", "--name-status", "-M", "-z", "\(baseRef)...HEAD"], in: repositoryRoot)
+            // Branch scope emulates `base...HEAD` (merge-base). Explicit scopes diff the
+            // literal refs the caller named.
+            let range: [String]
+            switch resolvedScope {
+            case .branch: range = ["\(baseRef)...HEAD"]
+            case .since: range = [baseRef]
+            case .commit: range = [baseRef, endRef ?? "HEAD"]
+            }
+            let branchDiff = runGit(["diff", "--name-status", "-M", "-z"] + range, in: repositoryRoot)
             if branchDiff?.exitCode == 0, let stdout = branchDiff?.stdout {
                 merge(parseNameStatus(stdout), into: &changesByPath, repositoryRoot: repositoryRoot, openedPrefix: openedPrefix)
             }
         }
 
-        let workingTree = runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], in: repositoryRoot)
-        if workingTree?.exitCode == 0, let stdout = workingTree?.stdout {
-            merge(parsePorcelainStatus(stdout), into: &changesByPath, repositoryRoot: repositoryRoot, openedPrefix: openedPrefix)
+        if includeWorkingTree {
+            let workingTree = runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], in: repositoryRoot)
+            if workingTree?.exitCode == 0, let stdout = workingTree?.stdout {
+                merge(parsePorcelainStatus(stdout), into: &changesByPath, repositoryRoot: repositoryRoot, openedPrefix: openedPrefix)
+            }
         }
 
         let files = changesByPath.values.sorted { lhs, rhs in
@@ -126,30 +204,83 @@ public enum GitChangeSet {
             branchName: branchName,
             baseRef: baseRef,
             upstreamRef: upstreamRef,
-            files: files
+            files: files,
+            scope: resolvedScope,
+            commitSummary: commitSummary
         ))
+    }
+
+    /// The commits the picker offers: everything on the branch since the discovered base
+    /// (newest first), or recent history when no base exists (e.g. a repo with no remote).
+    /// Capped so a very old branch can't produce an unbounded menu.
+    public static let maxListedCommits = 200
+
+    public static func listCommits(for openedRootURL: URL) -> [GitCommitSummary] {
+        let openedRoot = openedRootURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard let repositoryRoot = repositoryRoot(for: openedRoot) else { return [] }
+
+        let upstreamRef = optionalOutput(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], in: repositoryRoot)
+        let baseRef = discoverBaseRef(upstreamRef: upstreamRef, in: repositoryRoot)
+        let range = baseRef.map { "\($0)..HEAD" } ?? "HEAD"
+
+        // Unit separator (0x1f) can't appear in a commit subject; newline separates records.
+        guard let result = runGit(
+            ["log", "--max-count=\(maxListedCommits)", "--format=%H%x1f%h%x1f%s", range],
+            in: repositoryRoot
+        ), result.exitCode == 0, let stdout = String(data: result.stdout, encoding: .utf8) else {
+            return []
+        }
+
+        return stdout.split(separator: "\n").compactMap { line in
+            let fields = line.split(separator: "\u{1f}", maxSplits: 2, omittingEmptySubsequences: false)
+            guard fields.count == 3 else { return nil }
+            return GitCommitSummary(
+                sha: String(fields[0]),
+                shortSHA: String(fields[1]),
+                subject: String(fields[2])
+            )
+        }
     }
 
     public static func loadDiff(for fileURL: URL, in context: GitChangeContext) -> GitDiffLoadResult {
         guard let file = changedFile(for: fileURL, in: context) else {
             return .fileNotInChangeSet
         }
+        return loadDiff(file: file, in: context)
+    }
 
+    public static func loadDiff(file: GitChangedFile, in context: GitChangeContext) -> GitDiffLoadResult {
+        loadDiff(file: file, in: context, diffBase: resolvedDiffBase(in: context))
+    }
+
+    /// The concrete commit each file diffs against. Batch callers resolve this once instead of
+    /// paying a `git merge-base` per file. Only branch scope resolves through the merge base —
+    /// an explicit `.since`/`.commit` base means the literal ref the caller named.
+    static func resolvedDiffBase(in context: GitChangeContext) -> String? {
+        switch context.scope {
+        case .branch:
+            return context.baseRef.map { mergeBase(for: $0, in: context.repositoryRootURL) ?? $0 }
+        case .since, .commit:
+            return context.baseRef
+        }
+    }
+
+    static func loadDiff(file: GitChangedFile, in context: GitChangeContext, diffBase: String?) -> GitDiffLoadResult {
         let result: GitCommandResult?
         if case .untracked = file.status {
             result = runGit(
                 ["diff", "--no-ext-diff", "--no-color", "--no-index", "--", "/dev/null", file.repositoryPath],
                 in: context.repositoryRootURL
             )
-        } else if let baseRef = context.baseRef {
-            let diffBase = mergeBase(for: baseRef, in: context.repositoryRootURL) ?? baseRef
-            result = runGit(
-                ["diff", "--no-ext-diff", "--no-color", "--find-renames", "--unified=80", diffBase, "--", file.repositoryPath],
-                in: context.repositoryRootURL
-            )
         } else {
+            // Branch/since scopes diff the base against the working tree; commit scope pins
+            // both endpoints so the patch is exactly that commit.
+            var endpoints = [diffBase ?? "HEAD"]
+            if case .commit(let sha) = context.scope {
+                endpoints.append(sha)
+            }
             result = runGit(
-                ["diff", "--no-ext-diff", "--no-color", "--find-renames", "--unified=80", "HEAD", "--", file.repositoryPath],
+                ["diff", "--no-ext-diff", "--no-color", "--find-renames", "--unified=80"] + endpoints + ["--", file.repositoryPath],
                 in: context.repositoryRootURL
             )
         }
@@ -397,7 +528,7 @@ public enum GitChangeSet {
 
     // MARK: - Git command runner
 
-    private struct GitCommandResult {
+    struct GitCommandResult {
         let exitCode: Int32
         let stdout: Data
         let stderr: Data
@@ -408,7 +539,8 @@ public enum GitChangeSet {
         }
     }
 
-    private static func runGit(_ arguments: [String], in directory: URL) -> GitCommandResult? {
+    /// Internal so sibling extensions (e.g. the document loader) can run git too.
+    static func runGit(_ arguments: [String], in directory: URL) -> GitCommandResult? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", directory.path] + arguments
@@ -420,15 +552,28 @@ public enum GitChangeSet {
 
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return nil
         }
 
+        // Drain both pipes *before* waiting: a child writing more than the pipe buffer
+        // (~64 KB) blocks until someone reads, so waitUntilExit-first deadlocks on big diffs.
+        // stderr is drained on a background queue so stdout and stderr can't starve each other.
+        var stderrData = Data()
+        let stderrDrained = DispatchSemaphore(value: 0)
+        let stderrHandle = stderr.fileHandleForReading
+        DispatchQueue.global(qos: .utility).async {
+            stderrData = stderrHandle.readDataToEndOfFile()
+            stderrDrained.signal()
+        }
+        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+        stderrDrained.wait()
+        process.waitUntilExit()
+
         return GitCommandResult(
             exitCode: process.terminationStatus,
-            stdout: stdout.fileHandleForReading.readDataToEndOfFile(),
-            stderr: stderr.fileHandleForReading.readDataToEndOfFile()
+            stdout: stdoutData,
+            stderr: stderrData
         )
     }
 }

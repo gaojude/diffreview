@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import MyIDECore
 
-/// Shared observable state for a window: the opened root folder, branch change tree, and selection.
+/// Shared observable state for a window: the opened root folder and its branch change set.
 @MainActor
 final class AppState: ObservableObject {
     enum ChangeTreeState {
@@ -14,13 +14,14 @@ final class AppState: ObservableObject {
     /// The directory the app was opened on (immutable for the window's lifetime).
     let rootURL: URL
 
-    /// Currently selected file in the sidebar. Drives the content pane.
-    @Published var selectedFileURL: URL?
+    /// Which diff this window shows: the whole branch (default) or one commit picked from
+    /// the commit menu. Changing it reloads the change tree.
+    @Published private(set) var scope: GitDiffScope = .branch
 
-    /// Sidebar tree scoped to the active branch/worktree change set.
-    @Published private(set) var sidebarRoot: FileNode
+    /// The branch's commits (newest first), offered by the toolbar commit picker.
+    @Published private(set) var commits: [GitCommitSummary] = []
 
-    /// Metadata for the branch/base currently represented by the sidebar.
+    /// Metadata for the branch/base currently shown by the content pane.
     @Published private(set) var changeTreeState: ChangeTreeState = .loading
 
     /// Durable user configuration. Adjusted via commands and persisted as a single settings blob.
@@ -29,28 +30,75 @@ final class AppState: ObservableObject {
     }
 
     var fontSize: CGFloat { configuration.fontSize }
-    var navigationTitle: String { "Branch Changes" }
+    var diffLayout: DiffLayoutMode { configuration.diffLayout }
+
+    /// The window title doubles as the scope marker: it names the reviewed commit
+    /// (`abc1234  subject`) or base ref, so what the document diffs is always visible.
+    var navigationTitle: String {
+        switch scope {
+        case .branch:
+            return "Branch Changes"
+        case .since(let ref):
+            return "Changes Since \(ref)"
+        case .commit(let ref):
+            if case .loaded(let context) = changeTreeState, let summary = context.commitSummary {
+                return summary
+            }
+            if let commit = commits.first(where: { $0.sha == ref }) {
+                return "\(commit.shortSHA)  \(commit.subject)"
+            }
+            return "Commit \(ref)"
+        }
+    }
+
+    func setDiffLayout(_ layout: DiffLayoutMode) {
+        updateConfiguration { $0.diffLayout = layout }
+    }
 
     private let configurationStore: AppConfigurationStore
     private var hasLoadedChangeTree = false
+    /// Guards against a slow earlier load landing after a newer scope selection.
+    private var loadGeneration = 0
 
     init(rootURL: URL, configurationStore: AppConfigurationStore = .standard()) {
         self.rootURL = rootURL
         self.configurationStore = configurationStore
         self.configuration = configurationStore.load()
-        self.sidebarRoot = FileNode.emptyRoot(rootURL)
     }
 
     func loadChangeTreeIfNeeded() {
         guard !hasLoadedChangeTree else { return }
         hasLoadedChangeTree = true
-        changeTreeState = .loading
+        reloadChangeTree()
 
         let rootURL = self.rootURL
         Task { @MainActor in
-            let result = await Task.detached(priority: .userInitiated) {
-                GitChangeSet.load(for: rootURL)
+            let listed = await Task.detached(priority: .userInitiated) {
+                GitChangeSet.listCommits(for: rootURL)
             }.value
+            commits = listed
+        }
+    }
+
+    /// Switches the window between the whole-branch view and a single commit from the picker.
+    func select(scope newScope: GitDiffScope) {
+        guard newScope != scope else { return }
+        scope = newScope
+        reloadChangeTree()
+    }
+
+    private func reloadChangeTree() {
+        changeTreeState = .loading
+        loadGeneration += 1
+        let generation = loadGeneration
+
+        let rootURL = self.rootURL
+        let scope = self.scope
+        Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                GitChangeSet.load(for: rootURL, scope: scope)
+            }.value
+            guard generation == loadGeneration else { return }
             apply(result)
         }
     }
@@ -59,20 +107,9 @@ final class AppState: ObservableObject {
         switch result {
         case .repository(let context):
             changeTreeState = .loaded(context)
-            sidebarRoot = FileNode.changeRoot(rootURL, files: context.files)
-            selectedFileURL = firstPreviewableFile(in: context)
         case .notRepository(let message):
             changeTreeState = .notRepository(message)
-            sidebarRoot = FileNode.emptyRoot(rootURL)
-            selectedFileURL = nil
         }
-    }
-
-    private func firstPreviewableFile(in context: GitChangeContext) -> URL? {
-        context.files.first(where: { file in
-            if case .deleted = file.status { return false }
-            return true
-        })?.url ?? context.files.first?.url
     }
 
     func increaseFontSize() {

@@ -1,5 +1,11 @@
 import Foundation
 
+/// How the diff pane lays out changes: editor-style split (old|new) or a single unified column.
+public enum DiffLayoutMode: String, Codable, Equatable, Sendable {
+    case split
+    case unified
+}
+
 /// Durable user preferences for the app. Keep this as the single top-level configuration value
 /// so future preferences can be added without inventing new persistence paths.
 public struct AppConfiguration: Codable, Equatable, Sendable {
@@ -8,23 +14,30 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     /// Point size of the code viewer's font.
     public var fontSize: CGFloat
 
-    public init(fontSize: CGFloat = FontSizes.default) {
+    /// Split vs unified diff rendering.
+    public var diffLayout: DiffLayoutMode
+
+    public init(fontSize: CGFloat = FontSizes.default, diffLayout: DiffLayoutMode = .unified) {
         self.fontSize = FontSizes.clamp(fontSize)
+        self.diffLayout = diffLayout
     }
 
     private enum CodingKeys: String, CodingKey {
         case fontSize
+        case diffLayout
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let fontSize = try container.decodeIfPresent(CGFloat.self, forKey: .fontSize) ?? FontSizes.default
-        self.init(fontSize: fontSize)
+        let diffLayout = try container.decodeIfPresent(DiffLayoutMode.self, forKey: .diffLayout) ?? .unified
+        self.init(fontSize: fontSize, diffLayout: diffLayout)
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(fontSize, forKey: .fontSize)
+        try container.encode(diffLayout, forKey: .diffLayout)
     }
 }
 
@@ -62,7 +75,9 @@ public extension UserDefaultsConfigurationStore where Value == AppConfiguration 
     static func standard(defaults: UserDefaults = .standard) -> AppConfigurationStore {
         AppConfigurationStore(
             defaults: defaults,
-            key: "com.judegao.myide.appConfiguration.v1",
+            // v2: the diff layout default changed to `.unified`; a fresh key lets the new
+            // default actually take effect over previously persisted `.split` blobs.
+            key: "com.judegao.myide.appConfiguration.v2",
             defaultValue: .default
         )
     }

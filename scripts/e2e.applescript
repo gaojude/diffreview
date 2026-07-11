@@ -31,18 +31,19 @@ on run arguments
 			if winCount < 1 then error "MyIDE has no windows"
 			if wasFrontmost is false then set frontmost to true
 
-			-- Best-effort: look for the sidebar outline in the window subtree.
-			set sidebarFound to false
+			-- Best-effort: look for the code viewer's scroll area in the window subtree
+			-- (there is no sidebar; the diff pane is the whole window).
+			set contentFound to false
 			try
 				repeat with el in (entire contents of window 1)
-					if (class of el) is outline then
-						set sidebarFound to true
+					if (class of el) is scroll area then
+						set contentFound to true
 						exit repeat
 					end if
 				end repeat
 			end try
 
-			log "windows=" & winCount & " frontmost=" & wasFrontmost & " sidebarOutline=" & sidebarFound
+			log "windows=" & winCount & " frontmost=" & wasFrontmost & " contentArea=" & contentFound
 		end tell
 	end tell
 	return "ok"
