@@ -1,15 +1,15 @@
 #!/bin/bash
-# Build the app from source, then install the `redline` launcher shim to /usr/local/bin
+# Build the app from source, then install the `diffreview` launcher shim to /usr/local/bin
 # (plus a `my-ide` alias for anyone used to the working title).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 "$ROOT/scripts/build.sh"
 
-# Destination bin dir: first arg, else $REDLINE_PREFIX, else /usr/local/bin.
-DEST_DIR="${1:-${REDLINE_PREFIX:-/usr/local/bin}}"
+# Destination bin dir: first arg, else $DIFFREVIEW_PREFIX, else /usr/local/bin.
+DEST_DIR="${1:-${DIFFREVIEW_PREFIX:-/usr/local/bin}}"
 APP_BUNDLE="$ROOT/build/MyIDE.app"
-SHIM="$DEST_DIR/redline"
+SHIM="$DEST_DIR/diffreview"
 
 TMP="$(mktemp)"
 # Runtime vars are escaped (\$) so they resolve when the shim runs, not now.
@@ -17,11 +17,11 @@ TMP="$(mktemp)"
 # (a bare `binary &` launch stays in the background); --args passes the directory.
 cat > "$TMP" <<EOF
 #!/bin/sh
-# Launcher for Redline (source build) — resolves the target directory and opens the app
+# Launcher for DiffReview (source build) — resolves the target directory and opens the app
 # on it (foreground). Reviewing a single commit is done in-app via the commit picker.
 APP="$APP_BUNDLE"
 TARGET="\${1:-.}"
-DIR="\$(cd "\$TARGET" 2>/dev/null && pwd)" || { echo "redline: not a directory: \$TARGET" >&2; exit 1; }
+DIR="\$(cd "\$TARGET" 2>/dev/null && pwd)" || { echo "diffreview: not a directory: \$TARGET" >&2; exit 1; }
 open -n "\$APP" --args "\$DIR"
 EOF
 chmod +x "$TMP"
@@ -39,4 +39,4 @@ else
   sudo ln -sf "$SHIM" "$DEST_DIR/my-ide"
 fi
 
-echo "✓ Installed. Try:  cd /path/to/your/project && redline ."
+echo "✓ Installed. Try:  cd /path/to/your/project && diffreview ."

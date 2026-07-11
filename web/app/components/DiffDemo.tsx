@@ -141,7 +141,7 @@ export default function DiffDemo() {
             <span className="tl-yellow" />
             <span className="tl-green" />
           </div>
-          <span className="diff-titlebar-text">Redline — feature/checkout-flow</span>
+          <span className="diff-titlebar-text">DiffReview — feature/checkout-flow</span>
           <div className="diff-traffic-lights" style={{ visibility: "hidden" }}>
             <span className="tl-red" />
             <span className="tl-yellow" />

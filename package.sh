@@ -1,10 +1,10 @@
 #!/bin/bash
-# Package a release: build MyIDE in release mode, assemble the branded Redline.app,
-# and wrap it in a drag-to-install DMG at dist/Redline-v<version>.dmg.
+# Package a release: build MyIDE in release mode, assemble the branded DiffReview.app,
+# and wrap it in a drag-to-install DMG at dist/DiffReview-v<version>.dmg.
 set -euo pipefail
 
-APP_NAME="Redline"
-BUNDLE_ID="com.judegao.redline"
+APP_NAME="DiffReview"
+BUNDLE_ID="com.judegao.diffreview"
 VERSION="0.1.0"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -30,11 +30,11 @@ cp "$BIN_DIR/MyIDE" "$MACOS/$APP_NAME"
 # HighlighterSwift's grammar/theme bundle (and any other SwiftPM resources).
 find "$BIN_DIR" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
 
-# The `redline` CLI: `redline .` opens the app on that directory, like `code .`.
-# Named redline-cli because MacOS/ already holds the app binary `Redline` and the default
-# APFS volume is case-insensitive — `redline` would silently overwrite it.
-cp "$ROOT/scripts/redline-cli" "$MACOS/redline-cli"
-chmod +x "$MACOS/redline-cli"
+# The `diffreview` CLI: `diffreview .` opens the app on that directory, like `code .`.
+# Named diffreview-cli because MacOS/ already holds the app binary `DiffReview` and the default
+# APFS volume is case-insensitive — `diffreview` would silently overwrite it.
+cp "$ROOT/scripts/diffreview-cli" "$MACOS/diffreview-cli"
+chmod +x "$MACOS/diffreview-cli"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

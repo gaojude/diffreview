@@ -69,15 +69,15 @@ struct MyIDEApp: App {
 
     private var cliMenuTitle: String {
         if case .available(let existingCommand) = session.cliInstaller.state, existingCommand {
-            return "Replace redline Command Line Tool…"
+            return "Replace diffreview Command Line Tool…"
         }
         if case .installed = session.cliInstaller.state {
-            return "redline Command Line Tool Installed"
+            return "diffreview Command Line Tool Installed"
         }
         if case .failed = session.cliInstaller.state {
-            return "Retry redline Command Line Tool Installation…"
+            return "Retry diffreview Command Line Tool Installation…"
         }
-        return "Install redline Command Line Tool…"
+        return "Install diffreview Command Line Tool…"
     }
 
     /// Headless harness for the review-comments flow: drives the real controller through
@@ -145,7 +145,7 @@ struct MyIDEApp: App {
     }
 
     private static func rootURLArgument() -> URL? {
-        // The `redline` shim passes an absolute directory as argv[1]. A Finder launch has no
+        // The `diffreview` shim passes an absolute directory as argv[1]. A Finder launch has no
         // project argument and deliberately falls through to the welcome screen.
         let cwd = FileManager.default.currentDirectoryPath
         return FileSystem.resolveRootDirectoryArgument(
@@ -218,7 +218,7 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Redline"
+        window.title = "DiffReview"
         window.representedURL = session.project?.rootURL
         window.minSize = NSSize(width: 1_060, height: 520)
         window.toolbarStyle = .unified
@@ -238,7 +238,7 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
     func chooseProjectFolder(session: AppSession) {
         let panel = NSOpenPanel()
         panel.title = "Open Project Folder"
-        panel.message = "Choose a Git project to review in Redline."
+        panel.message = "Choose a Git project to review in DiffReview."
         panel.prompt = "Open Project"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -250,7 +250,7 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
             guard response == .OK, let rootURL = panel.url, let session else { return }
             session.openProject(rootURL)
             self?.projectWindow?.representedURL = rootURL
-            self?.projectWindow?.title = "Redline"
+            self?.projectWindow?.title = "DiffReview"
             self?.revealProjectWindow(retries: 2)
         }
 

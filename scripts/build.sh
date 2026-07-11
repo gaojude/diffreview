@@ -19,8 +19,8 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RESOURCES"
 cp "$BIN_DIR/MyIDE" "$MACOS/MyIDE"
 find "$BIN_DIR" -maxdepth 1 -name '*.bundle' -exec cp -R {} "$RESOURCES/" \;
-cp "$ROOT/scripts/redline-cli" "$MACOS/redline-cli"
-chmod +x "$MACOS/redline-cli"
+cp "$ROOT/scripts/diffreview-cli" "$MACOS/diffreview-cli"
+chmod +x "$MACOS/diffreview-cli"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

@@ -1,14 +1,12 @@
-# Redline
+# DiffReview
 
-Native macOS code review for the agent era. Run `redline .` in a Git project and the window
+Native macOS code review for the agent era. Run `diffreview .` in a Git project and the window
 **is** the diff: every change on your branch as one scrolling document. Read it like a pull
 request — check files off as reviewed, comment on lines — then copy the whole review as a
 single prompt-ready block for your coding agent.
 
 Built with SwiftUI + AppKit (no Electron, no web view), packaged as a real `.app`, launched
-by a thin `redline` command — like `code .`, but native.
-
-> Redlining a draft = marking it up with the red pen. That's what this app does to a branch.
+by a thin `diffreview` command — like `code .`, but native.
 
 ## Features
 
@@ -46,28 +44,28 @@ by a thin `redline` command — like `code .`, but native.
 
 ## Install
 
-Download the DMG from [redline.dev](https://redline.dev), drag **Redline** to Applications,
+Download the DMG from [diffreview.dev](https://diffreview.dev), drag **DiffReview** to Applications,
 and open it. Choose **Open Project Folder…** on the welcome screen (or press `⌘O`). To use
-Redline from Terminal, click **Install CLI** on that same screen.
+DiffReview from Terminal, click **Install CLI** on that same screen.
 
 You can also link the bundled CLI manually:
 
 ```sh
-sudo xattr -cr /Applications/Redline.app
-sudo ln -sf /Applications/Redline.app/Contents/MacOS/redline-cli /usr/local/bin/redline
+sudo xattr -cr /Applications/DiffReview.app
+sudo ln -sf /Applications/DiffReview.app/Contents/MacOS/diffreview-cli /usr/local/bin/diffreview
 ```
 
 Or build from source:
 
 ```sh
-./scripts/install.sh    # builds the app and installs the `redline` shim
+./scripts/install.sh    # builds the app and installs the `diffreview` shim
 ```
 
 Then, from inside any Git repository:
 
 ```sh
-redline .               # review the current branch's changes
-redline /some/repo      # or an explicit path
+diffreview .               # review the current branch's changes
+diffreview /some/repo      # or an explicit path
 ```
 
 ## Shortcuts
@@ -106,11 +104,11 @@ Sources/
                   inline composer, comments pane, floating Explorer panel
   MyIDESelfTest/  assertion harness (runs under plain swift build, exits non-zero on failure)
 scripts/          build / install / selftest / e2e
-package.sh        release packaging → dist/Redline-v<version>.dmg
-web/              redline.dev landing page (Next.js, deployed on Vercel)
+package.sh        release packaging → dist/DiffReview-v<version>.dmg
+web/              diffreview.dev landing page (Next.js, deployed on Vercel)
 ```
 
-Internal target names keep the project's working title (`MyIDE`); the product is Redline.
+Internal target names keep the project's working title (`MyIDE`); the product is DiffReview.
 
 ### Why it stays fast
 

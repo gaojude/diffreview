@@ -5,10 +5,10 @@ export default function Home() {
   return (
     <main className="min-h-screen flex flex-col items-center px-4 py-16">
       <h1 className="text-3xl md:text-5xl font-bold tracking-tight">
-        redline.dev
+        diffreview.dev
       </h1>
       <p className="mt-4 text-[var(--color-text-dim)] text-sm md:text-base max-w-md text-center">
-        Your AI writes the code. Redline is where you review it — and send the
+        Your AI writes the code. DiffReview is where you review it — and send the
         fixes back.
       </p>
 
@@ -18,7 +18,7 @@ export default function Home() {
 
       <div className="mt-10 flex flex-col sm:flex-row gap-3">
         <a
-          href="/Redline-v0.1.0.dmg"
+          href="/DiffReview-v0.1.0.dmg"
           className="inline-flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -29,7 +29,7 @@ export default function Home() {
           Download for macOS
         </a>
         <a
-          href="https://github.com/gaojude/redline"
+          href="https://github.com/gaojude/diffreview"
           target="_blank"
           className="inline-flex items-center gap-2 border border-[var(--color-border)] px-5 py-2.5 rounded-lg text-sm font-medium text-[var(--color-text-dim)] hover:text-white hover:border-[var(--color-text-dim)] transition-colors"
         >
@@ -44,10 +44,10 @@ export default function Home() {
         After installing, allow the app and link the CLI:
       </p>
       <code className="mt-2 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-xs text-[var(--color-accent)] text-center">
-        sudo xattr -cr /Applications/Redline.app
+        sudo xattr -cr /Applications/DiffReview.app
       </code>
       <code className="mt-2 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-2 text-xs text-[var(--color-accent)] text-center break-all">
-        sudo ln -sf /Applications/Redline.app/Contents/MacOS/redline-cli /usr/local/bin/redline
+        sudo ln -sf /Applications/DiffReview.app/Contents/MacOS/diffreview-cli /usr/local/bin/diffreview
       </code>
 
       <AgentSection />

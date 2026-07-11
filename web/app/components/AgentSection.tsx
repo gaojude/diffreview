@@ -50,7 +50,7 @@ export default function AgentSection() {
 
         <p className="mt-4 text-[var(--color-text-dim)] text-sm md:text-base leading-relaxed">
           AI can generate a whole project in one shot — but somebody still has
-          to read it. Redline makes the reading round-trip: you review the
+          to read it. DiffReview makes the reading round-trip: you review the
           branch, drop comments across as many files as you like, and export
           the whole review as one{" "}
           <span className="text-[var(--color-text)]">prompt-ready block</span>{" "}
@@ -87,7 +87,7 @@ export default function AgentSection() {
               <div className="text-[var(--color-text)]">
                 Run{" "}
                 <span className="font-mono text-[var(--color-accent)]">
-                  redline .
+                  diffreview .
                 </span>{" "}
                 and review it like a pull request.
               </div>
@@ -124,7 +124,7 @@ export default function AgentSection() {
           className="mt-8 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-4 py-3 text-[11px] md:text-xs text-[var(--color-text-dim)] leading-relaxed overflow-x-auto"
         >
 {`┌────────────┐    writes branch     ┌─────────────────┐
-│ your agent │ ───────────────────▶ │   redline .     │
+│ your agent │ ───────────────────▶ │   diffreview .     │
 │            │                      │ ☑ files reviewed│
 │  applies   │ ◀─────────────────── │ ⌘K line comments│
 │  the fixes │   one prompt block   └─────────────────┘

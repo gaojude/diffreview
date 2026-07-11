@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// Installs the launcher embedded in Redline.app into a conventional PATH location. The app is
+/// Installs the launcher embedded in DiffReview.app into a conventional PATH location. The app is
 /// not sandboxed; when `/usr/local/bin` is protected, macOS supplies its standard administrator
 /// authentication dialog through AppleScript's `with administrator privileges` facility.
 @MainActor
@@ -16,11 +16,11 @@ final class CLIInstaller: ObservableObject {
 
     @Published private(set) var state: State = .available(existingCommand: false)
 
-    let destinationURL = URL(fileURLWithPath: "/usr/local/bin/redline")
+    let destinationURL = URL(fileURLWithPath: "/usr/local/bin/diffreview")
 
     private var bundledCLIURL: URL {
         Bundle.main.bundleURL
-            .appendingPathComponent("Contents/MacOS/redline-cli", isDirectory: false)
+            .appendingPathComponent("Contents/MacOS/diffreview-cli", isDirectory: false)
     }
 
     init() {
@@ -29,7 +29,7 @@ final class CLIInstaller: ObservableObject {
 
     func refresh() {
         guard FileManager.default.isExecutableFile(atPath: bundledCLIURL.path) else {
-            state = .unavailable("The command line tool is not included in this build of Redline.")
+            state = .unavailable("The command line tool is not included in this build of DiffReview.")
             return
         }
 
@@ -55,7 +55,7 @@ final class CLIInstaller: ObservableObject {
             case .success:
                 refresh()
                 if state != .installed {
-                    state = .failed("The command was installed, but Redline could not verify it.")
+                    state = .failed("The command was installed, but DiffReview could not verify it.")
                 }
             case .failure(let error):
                 state = .failed(error.localizedDescription)

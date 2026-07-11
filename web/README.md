@@ -1,6 +1,6 @@
-# redline-web
+# diffreview-web
 
-Landing page for [Redline](https://github.com/gaojude/redline) — native macOS code review
+Landing page for [DiffReview](https://github.com/gaojude/diffreview) — native macOS code review
 for the agent era. Next.js + Tailwind, deployed on Vercel.
 
 ```sh

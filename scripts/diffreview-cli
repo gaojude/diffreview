@@ -1,5 +1,5 @@
 #!/bin/sh
-# Launcher embedded in Redline.app. Resolve a /usr/local/bin/redline symlink back to the
+# Launcher embedded in DiffReview.app. Resolve a /usr/local/bin/diffreview symlink back to the
 # bundle using portable macOS `readlink` (BSD readlink does not provide `-f`).
 set -eu
 
@@ -17,7 +17,7 @@ SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
 APP="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TARGET="${1:-.}"
 DIR="$(cd "$TARGET" 2>/dev/null && pwd)" || {
-  echo "redline: not a directory: $TARGET" >&2
+  echo "diffreview: not a directory: $TARGET" >&2
   exit 1
 }
 

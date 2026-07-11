@@ -1,24 +1,24 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
-const url = "https://redline.dev";
+const url = "https://diffreview.dev";
 const description =
-  "Your AI writes the code — Redline is where you review it. A native macOS app that shows the whole branch as one diff, collects your line comments, and copies them back to your coding agent as one prompt.";
+  "Your AI writes the code — DiffReview is where you review it. A native macOS app that shows the whole branch as one diff, collects your line comments, and copies them back to your coding agent as one prompt.";
 
 export const metadata: Metadata = {
-  title: "Redline — Native Code Review for macOS",
+  title: "DiffReview — Native Code Review for macOS",
   description,
   metadataBase: new URL(url),
   openGraph: {
-    title: "Redline",
+    title: "DiffReview",
     description,
     url,
-    siteName: "Redline",
+    siteName: "DiffReview",
     type: "website",
   },
   twitter: {
     card: "summary",
-    title: "Redline",
+    title: "DiffReview",
     description,
   },
 };
