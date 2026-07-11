@@ -53,12 +53,13 @@ struct AgentTerminalPaneView: View {
                     .foregroundStyle(Self.accent)
             }
             Spacer()
+            modelMenu
             Button {
                 controller.clearConversation()
             } label: {
                 Label("New chat", systemImage: "square.and.pencil")
                     .font(.caption)
-                    .labelStyle(.titleAndIcon)
+                    .labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
             .tint(Self.accent)
@@ -78,6 +79,41 @@ struct AgentTerminalPaneView: View {
         case .replaying: return .blue
         case .offline: return .red
         }
+    }
+
+    // MARK: - Model picker
+
+    private var modelMenu: some View {
+        Menu {
+            ForEach(AssistantModelCatalog.options, id: \.family) { option in
+                Button {
+                    controller.switchModel(family: option.family)
+                } label: {
+                    if controller.currentModelFamily == option.family {
+                        Label(option.label, systemImage: "checkmark")
+                    } else {
+                        Text(option.label)
+                    }
+                }
+            }
+        } label: {
+            Label(currentModelShortLabel, systemImage: "cpu")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .tint(Self.accent)
+        .disabled(controller.mode == .none)
+        .help("Choose which model powers the assistant")
+    }
+
+    private var currentModelShortLabel: String {
+        guard let family = controller.currentModelFamily,
+              let option = AssistantModelCatalog.options.first(where: { $0.family == family }) else {
+            return "Model"
+        }
+        // Just the name, e.g. "Opus 4.8".
+        return option.label.components(separatedBy: " — ").first ?? option.label
     }
 
     // MARK: - Saved logins (first-class)

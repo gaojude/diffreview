@@ -12,12 +12,17 @@ public enum HarnessMessage: Equatable, Sendable {
     case toolUse(id: String, command: String)
     case turnEnd
     case fatal(String)
+    /// The SDK session id for the live conversation — persisted so the chat can
+    /// be resumed (true memory) after the app restarts.
+    case session(String)
 }
 
 public enum AppToHarnessMessage: Equatable, Sendable {
     case user(String)
     case toolResult(id: String, ok: Bool, output: String)
     case shutdown
+    /// Switch the live model mid-session (no restart, context preserved).
+    case setModel(String)
 }
 
 public enum HarnessWire {
@@ -53,6 +58,9 @@ public enum HarnessWire {
         case "fatal":
             guard let message = dictionary["message"] as? String else { return nil }
             return .fatal(message)
+        case "session":
+            guard let id = dictionary["id"] as? String else { return nil }
+            return .session(id)
         default:
             return nil
         }
@@ -69,6 +77,8 @@ public enum HarnessWire {
             dictionary = ["type": "tool_result", "id": id, "ok": ok, "output": output]
         case .shutdown:
             dictionary = ["type": "shutdown"]
+        case .setModel(let model):
+            dictionary = ["type": "set_model", "model": model]
         }
         guard
             let data = try? JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys]),

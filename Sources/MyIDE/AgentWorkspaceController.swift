@@ -59,26 +59,42 @@ final class AgentWorkspaceController: ObservableObject {
     @Published private(set) var savedSessions: [BrowserSessionStore.SavedSession] = []
     @Published private(set) var isSavingSession = false
 
+    /// The active model id (full, e.g. "anthropic/claude-opus-4-8"), persisted.
+    @Published private(set) var currentModel: String?
+
     private let portal = MapleLifePortal()
     private let engine: AgentBrowserEngine
     private var recorder = AutomationRecorder()
     private let store: AutomationStore
     private let sessionStore: BrowserSessionStore
+    private let chatStore: AssistantChatStore
+    private let preferencesStore: AssistantPreferencesStore
     private let client = AgentHarnessClient()
     private var realBrowser: RealAgentBrowser?
     private var lastAssistantText: String?
     private var replayTask: Task<Void, Never>?
-    /// Remembered so "New chat" can relaunch the harness with a fresh context.
-    private var launchSpec: AgentHarnessClient.LaunchSpec?
-    private var greeting = "Hi! Tell me what you'd like me to do."
     private var isRestarting = false
+
+    /// Live SDK session id (for persistence); and the id to resume on launch.
+    private var sessionID: String?
+    private var pendingResumeID: String?
+
+    // Launch inputs remembered so New chat / model switch can rebuild the spec.
+    private var harnessNodeURL: URL?
+    private var harnessScriptURL: URL?
+    private var harnessUseMock = false
+    private var greeting = "Hi! Tell me what you'd like me to do."
 
     init(
         store: AutomationStore = AutomationStore(directory: AutomationStore.defaultDirectory()),
-        sessionStore: BrowserSessionStore = BrowserSessionStore(directory: BrowserSessionStore.defaultDirectory())
+        sessionStore: BrowserSessionStore = BrowserSessionStore(directory: BrowserSessionStore.defaultDirectory()),
+        chatStore: AssistantChatStore = AssistantChatStore(fileURL: AssistantChatStore.defaultFileURL()),
+        preferencesStore: AssistantPreferencesStore = AssistantPreferencesStore(fileURL: AssistantPreferencesStore.defaultFileURL())
     ) {
         self.store = store
         self.sessionStore = sessionStore
+        self.chatStore = chatStore
+        self.preferencesStore = preferencesStore
         engine = AgentBrowserEngine(sites: [portal])
         engine.onEvent = { [weak self] event in
             self?.handleEngineEvent(event)
@@ -87,7 +103,18 @@ final class AgentWorkspaceController: ObservableObject {
         sessionStore.prepareDirectory()
         savedSessions = sessionStore.list()
         recorder.start()
+
+        // Restore prior chat (transcript + session id) and the chosen model.
+        currentModel = preferencesStore.load().model
+        if let snapshot = chatStore.load() {
+            transcript = snapshot.lines.map(Self.entry(from:))
+            pendingResumeID = snapshot.sessionID
+            sessionID = snapshot.sessionID
+        }
     }
+
+    /// The label of the active model, for the picker's checkmark.
+    var currentModelFamily: String? { AssistantModelCatalog.family(of: currentModel) }
 
     /// Whether the save/restore-login controls should show (real browser only).
     var supportsSavedLogins: Bool { browserIsReal }
@@ -136,7 +163,6 @@ final class AgentWorkspaceController: ObservableObject {
             return
         }
 
-        let harnessDirectory = script.deletingLastPathComponent()
         let useMock = environment["MYIDE_AGENT_MOCK"] == "1" || !Self.isLiveCapable(script)
 
         // Live sessions get a REAL Chrome browser whenever the agent-browser
@@ -180,19 +206,24 @@ final class AgentWorkspaceController: ObservableObject {
             }
         }
 
-        var arguments: [String] = []
+        // Model: a persisted choice wins, else the launch env, else SDK default.
+        if currentModel == nil {
+            currentModel = environment["MYIDE_ASSISTANT_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Remember the launch inputs so New chat and model switches can rebuild.
+        harnessNodeURL = node
+        harnessScriptURL = script
+        harnessUseMock = useMock
+        realBrowser = realExecutor
+        browserIsReal = realExecutor != nil
+
         if useMock {
-            arguments = ["--mock", harnessDirectory.appendingPathComponent("scenarios/insurance-claim.json").path]
+            greeting = "Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim”."
+        } else if realExecutor != nil {
+            greeting = "Hi! Tell me what to do on the web — I'll open a Chrome window you can watch. If a site needs your password, I'll hand the keyboard to you."
         } else {
-            if realExecutor != nil {
-                arguments = ["--real"]
-            }
-            // Explicit model override; otherwise the SDK resolves from
-            // ANTHROPIC_MODEL / the claude CLI's default.
-            if let model = environment["MYIDE_ASSISTANT_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !model.isEmpty {
-                arguments += ["--model", model]
-            }
+            greeting = "Hi! Tell me what you'd like me to do in the browser."
         }
 
         // Real CLI calls block for seconds, so they run right on the client's
@@ -213,20 +244,13 @@ final class AgentWorkspaceController: ObservableObject {
             Task { @MainActor in self?.handleTermination(code) }
         }
 
-        let spec = AgentHarnessClient.LaunchSpec(nodeURL: node, scriptURL: script, arguments: arguments)
-        launchSpec = spec
-        if useMock {
-            greeting = "Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim”."
-        } else if realExecutor != nil {
-            greeting = "Hi! Tell me what to do on the web — I'll open a Chrome window you can watch. If a site needs your password, I'll hand the keyboard to you."
-        } else {
-            greeting = "Hi! Tell me what you'd like me to do in the browser."
-        }
+        // Resume the prior conversation if we have one — true memory across
+        // restarts. A fresh transcript from disk is already showing.
+        let resuming = !useMock && pendingResumeID != nil
+        let spec = buildLaunchSpec(resume: resuming ? pendingResumeID : nil)
 
         switch client.launch(spec) {
         case .running:
-            realBrowser = realExecutor
-            browserIsReal = realExecutor != nil
             if realExecutor != nil {
                 // Real recordings keep their waits — replays on live sites
                 // fail without them.
@@ -235,8 +259,12 @@ final class AgentWorkspaceController: ObservableObject {
             }
             mode = useMock ? .mock : .live
             phase = .ready
-            appendStatus(greeting)
-            if let linkNote { appendStatus(linkNote) }
+            if resuming {
+                appendStatus("Welcome back — I picked up where we left off.")
+            } else {
+                appendStatus(greeting)
+                if let linkNote { appendStatus(linkNote) }
+            }
             // Scripted entry point: launch with a goal and the session starts
             // itself — no typing needed (demos, tests, "open and go" shortcuts).
             if let kickoff = environment["MYIDE_ASSISTANT_PROMPT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -250,22 +278,42 @@ final class AgentWorkspaceController: ObservableObject {
         }
     }
 
+    /// Builds the harness launch spec from the remembered inputs plus the
+    /// current model and an optional session to resume.
+    private func buildLaunchSpec(resume: String?) -> AgentHarnessClient.LaunchSpec {
+        let node = harnessNodeURL ?? URL(fileURLWithPath: "/usr/bin/env")
+        let script = harnessScriptURL ?? URL(fileURLWithPath: "agent-harness.mjs")
+        var arguments: [String] = []
+        if harnessUseMock {
+            arguments = ["--mock", script.deletingLastPathComponent().appendingPathComponent("scenarios/insurance-claim.json").path]
+        } else {
+            if browserIsReal { arguments += ["--real"] }
+            if let model = currentModel, !model.isEmpty { arguments += ["--model", model] }
+            if let resume, !resume.isEmpty { arguments += ["--resume", resume] }
+        }
+        return AgentHarnessClient.LaunchSpec(nodeURL: node, scriptURL: script, arguments: arguments)
+    }
+
     /// Clears the conversation and starts a fresh agent session so the context
-    /// window doesn't bloat over a long session. The harness process is
-    /// restarted (new SDK query = empty context); the browser, its logins, and
-    /// saved automations are all untouched.
+    /// window doesn't bloat over a long session. The harness restarts with an
+    /// empty context (no resume); the browser, its logins, saved automations,
+    /// and the chosen model are all untouched.
     func clearConversation() {
-        guard mode != .none, !isRestarting, let spec = launchSpec else { return }
+        guard mode != .none, !isRestarting else { return }
         isRestarting = true
         replayTask?.cancel()
         replayTask = nil
         transcript.removeAll()
         lastAssistantText = nil
         canSaveAutomation = false
+        sessionID = nil
+        pendingResumeID = nil
+        chatStore.clear()
         phase = .connecting
         appendStatus("Starting a fresh chat…")
 
         let client = self.client
+        let spec = buildLaunchSpec(resume: nil)
         Task { @MainActor in
             // Stop the old harness off the main actor (stop() briefly blocks).
             await Task.detached { client.stop() }.value
@@ -279,6 +327,22 @@ final class AgentWorkspaceController: ObservableObject {
                 self.appendStatus("I couldn't start a fresh chat: \(message)")
             }
             self.isRestarting = false
+        }
+    }
+
+    /// Switches the model. Live via the SDK's setModel (no restart, context
+    /// kept); the choice is persisted so it sticks across launches.
+    func switchModel(family: String) {
+        let id = AssistantModelCatalog.modelID(family: family, currentModel: currentModel)
+        guard id != currentModel else { return }
+        currentModel = id
+        preferencesStore.save(.init(model: id))
+        let label = AssistantModelCatalog.options.first { $0.family == family }?.label ?? family
+        if mode == .live {
+            client.send(.setModel(id))
+            appendStatus("Switched to \(label).")
+        } else {
+            appendStatus("\(label) will be used next time a live session starts.")
         }
     }
 
@@ -332,6 +396,7 @@ final class AgentWorkspaceController: ObservableObject {
         input = ""
         transcript.append(AgentTranscriptEntry(kind: .user, text: text))
         phase = .working
+        persistChat()
 
         // Ground every real-browser turn in what's on screen: "post it here"
         // almost always means the page that's already open, so the model gets
@@ -501,9 +566,23 @@ final class AgentWorkspaceController: ObservableObject {
                 phase = .ready
             }
             canSaveAutomation = !recorder.steps.isEmpty
+            persistChat()
         case .fatal(let message):
             phase = .offline(message)
             appendStatus("My helper hit a problem: \(message)")
+            // A poisoned resume id must not brick every future launch: drop it
+            // (keeping the visible transcript) so the next start is clean.
+            if pendingResumeID != nil {
+                pendingResumeID = nil
+                sessionID = nil
+                persistChat()
+            }
+        case .session(let id):
+            // Persist so the conversation can resume after a restart. Once the
+            // (possibly resumed) session confirms, the pending id is spent.
+            sessionID = id
+            pendingResumeID = nil
+            persistChat()
         }
     }
 
@@ -577,5 +656,40 @@ final class AgentWorkspaceController: ObservableObject {
 
     private func appendStatus(_ text: String) {
         transcript.append(AgentTranscriptEntry(kind: .status, text: text))
+    }
+
+    // MARK: - Chat persistence
+
+    /// Writes the current transcript + session id to disk so the conversation
+    /// survives an app restart. Off the main actor; a snapshot is captured on
+    /// the main actor first. Never persists the demo/mock transcript.
+    private func persistChat() {
+        guard mode == .live else { return }
+        let snapshot = AssistantChatStore.Snapshot(
+            sessionID: sessionID,
+            lines: transcript.map(Self.line(from:))
+        )
+        let store = chatStore
+        Task.detached(priority: .utility) { store.save(snapshot) }
+    }
+
+    private static func line(from entry: AgentTranscriptEntry) -> AssistantChatStore.Line {
+        switch entry.kind {
+        case .user: return .init(role: .user, text: entry.text, detail: entry.detail)
+        case .assistant: return .init(role: .assistant, text: entry.text, detail: entry.detail)
+        case .status: return .init(role: .status, text: entry.text, detail: entry.detail)
+        case .tool(let ok): return .init(role: .tool, text: entry.text, detail: entry.detail, ok: ok)
+        }
+    }
+
+    private static func entry(from line: AssistantChatStore.Line) -> AgentTranscriptEntry {
+        let kind: AgentTranscriptEntry.Kind
+        switch line.role {
+        case .user: kind = .user
+        case .assistant: kind = .assistant
+        case .status: kind = .status
+        case .tool: kind = .tool(ok: line.ok ?? true)
+        }
+        return AgentTranscriptEntry(kind: kind, text: line.text, detail: line.detail)
     }
 }

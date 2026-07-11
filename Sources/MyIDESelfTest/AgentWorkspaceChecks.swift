@@ -266,6 +266,8 @@ private func checkHarnessWire() {
           "decodes tool_use")
     check(HarnessWire.decode("{\"type\":\"turn_end\"}") == .turnEnd, "decodes turn_end")
     check(HarnessWire.decode("{\"type\":\"fatal\",\"message\":\"boom\"}") == .fatal("boom"), "decodes fatal")
+    check(HarnessWire.decode("{\"type\":\"session\",\"id\":\"sess-123\"}") == .session("sess-123"), "decodes session id")
+    check(HarnessWire.decode("{\"type\":\"session\"}") == nil, "session without id decodes to nil")
     check(HarnessWire.decode("not json at all") == nil, "malformed lines decode to nil")
     check(HarnessWire.decode("{\"type\":\"wibble\"}") == nil, "unknown types decode to nil")
     check(HarnessWire.decode("{\"type\":\"tool_use\",\"id\":\"t1\"}") == nil, "missing fields decode to nil")
@@ -282,6 +284,42 @@ private func checkHarnessWire() {
     check(result?["type"] as? String == "tool_result" && result?["id"] as? String == "t7"
           && result?["ok"] as? Bool == true && result?["output"] as? String == "Opened", "encodes tool results")
     check(fields(of: .shutdown)?["type"] as? String == "shutdown", "encodes shutdown")
+    let setModel = fields(of: .setModel("anthropic/claude-opus-4-8"))
+    check(setModel?["type"] as? String == "set_model" && setModel?["model"] as? String == "anthropic/claude-opus-4-8", "encodes set_model")
+
+    section("Chat persistence and model catalog")
+    let chatScratch = FileManager.default.temporaryDirectory
+        .appendingPathComponent("myide-chat-checks-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: chatScratch, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: chatScratch) }
+
+    let chat = AssistantChatStore(fileURL: chatScratch.appendingPathComponent("chat.json"))
+    check(chat.load() == nil, "no chat persisted initially")
+    let snapshot = AssistantChatStore.Snapshot(sessionID: "sess-9", lines: [
+        .init(role: .user, text: "hi"),
+        .init(role: .assistant, text: "hello"),
+        .init(role: .tool, text: "agent-browser open x", detail: "ok", ok: true),
+        .init(role: .status, text: "welcome"),
+    ])
+    chat.save(snapshot)
+    check(chat.load() == snapshot, "chat transcript + session id round-trip")
+    chat.clear()
+    check(chat.load() == nil, "New chat clears persisted chat")
+
+    let prefs = AssistantPreferencesStore(fileURL: chatScratch.appendingPathComponent("prefs.json"))
+    check(prefs.load().model == nil, "no model preference initially")
+    prefs.save(.init(model: "anthropic/claude-opus-4-8"))
+    check(prefs.load().model == "anthropic/claude-opus-4-8", "model preference round-trip")
+
+    // Catalog resolves ids against the active model's prefix.
+    check(AssistantModelCatalog.modelID(family: "opus-4-8", currentModel: "anthropic/claude-sonnet-5") == "anthropic/claude-opus-4-8",
+          "opus id derives from the gateway-prefixed current model")
+    check(AssistantModelCatalog.modelID(family: "opus-4-8", currentModel: "claude-sonnet-5") == "claude-opus-4-8",
+          "opus id derives from a bare current model")
+    check(AssistantModelCatalog.modelID(family: "sonnet-5", currentModel: nil) == "anthropic/claude-sonnet-5",
+          "falls back to the gateway prefix when no model is set")
+    check(AssistantModelCatalog.family(of: "anthropic/claude-opus-4-8") == "opus-4-8", "recognizes the family of a model id")
+    check(AssistantModelCatalog.family(of: nil) == nil, "no family for a nil model")
 }
 
 // MARK: - Real browser support

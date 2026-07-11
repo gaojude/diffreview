@@ -93,7 +93,7 @@ function requestTool(command) {
 /// Read line-buffered NDJSON from stdin and dispatch. Malformed lines and
 /// unknown message types are ignored for forward compatibility; stdin closing
 /// or an explicit shutdown message ends the process cleanly.
-function startStdinRouter(onUser) {
+function startStdinRouter(onUser, onControl) {
   const rl = createInterface({ input: process.stdin, terminal: false });
   rl.on('line', (line) => {
     const trimmed = line.trim();
@@ -109,6 +109,9 @@ function startStdinRouter(onUser) {
     switch (message.type) {
       case 'user':
         if (typeof message.text === 'string') onUser(message.text);
+        break;
+      case 'set_model':
+        if (onControl) onControl(message);
         break;
       case 'tool_result': {
         const resolve = pendingToolResults.get(message.id);
@@ -300,7 +303,7 @@ const REAL_SYSTEM_PROMPT = [
   '  so someone watching can follow along.',
 ].join('\n');
 
-async function runLive(realBrowser, model) {
+async function runLive(realBrowser, model, resume) {
   let sdk;
   let z;
   try {
@@ -320,14 +323,26 @@ async function runLive(realBrowser, model) {
   // returns — session end is always an explicit shutdown/stdin-close/stream-end.
   const queue = [];
   let wake = null;
-  startStdinRouter((text) => {
-    queue.push(text);
-    if (wake) {
-      const w = wake;
-      wake = null;
-      w();
+  // Assigned once query() is created, so control messages (set_model) can reach
+  // the live stream.
+  let liveStream = null;
+  startStdinRouter(
+    (text) => {
+      queue.push(text);
+      if (wake) {
+        const w = wake;
+        wake = null;
+        w();
+      }
+    },
+    (control) => {
+      if (control.type === 'set_model' && typeof control.model === 'string' && liveStream && liveStream.setModel) {
+        Promise.resolve(liveStream.setModel(control.model))
+          .then(() => diag(`model switched to ${control.model}`))
+          .catch((err) => diag(`setModel failed: ${err && err.message ? err.message : String(err)}`));
+      }
     }
-  });
+  );
 
   // Watchdog state: a turn that produces no SDK traffic for minutes means the
   // model leg hung (e.g. a gateway request that never returns). Failing loudly
@@ -354,9 +369,15 @@ async function runLive(realBrowser, model) {
   /// Translate one SDK stream message into protocol messages. SDK versions
   /// differ on exact shapes, so read defensively: the API message usually sits
   /// at `message.message`, but tolerate content at the top level too.
+  let lastSessionID = null;
   function handleSdkMessage(message) {
     if (!message || typeof message !== 'object') return;
     touch();
+    // Surface the SDK session id so the app can persist it and resume later.
+    if (typeof message.session_id === 'string' && message.session_id !== lastSessionID) {
+      lastSessionID = message.session_id;
+      emit({ type: 'session', id: message.session_id });
+    }
     if (message.type === 'result') {
       working = false;
     }
@@ -409,8 +430,10 @@ async function runLive(realBrowser, model) {
         maxTurns: 50,
         systemPrompt: realBrowser ? REAL_SYSTEM_PROMPT : SYSTEM_PROMPT,
         ...(model ? { model } : {}),
+        ...(resume ? { resume } : {}),
       },
     });
+    liveStream = stream;
 
     const watchdog = setInterval(() => {
       if (working && Date.now() - lastActivity > 240_000) {
@@ -457,6 +480,7 @@ function parseArgs(argv) {
   let delayMs = 150;
   let realBrowser = false;
   let model = null;
+  let resume = null;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--mock') {
@@ -470,6 +494,9 @@ function parseArgs(argv) {
     } else if (arg === '--model') {
       model = typeof argv[i + 1] === 'string' ? argv[i + 1] : null;
       i += 1;
+    } else if (arg === '--resume') {
+      resume = typeof argv[i + 1] === 'string' ? argv[i + 1] : null;
+      i += 1;
     } else if (arg === '--real') {
       // The app executes commands against the real agent-browser CLI; teach
       // the model the real grammar and real-web ground rules.
@@ -478,11 +505,11 @@ function parseArgs(argv) {
       diag(`ignoring unknown argument: ${arg}`);
     }
   }
-  return { mockRequested, mockPath, delayMs, realBrowser, model };
+  return { mockRequested, mockPath, delayMs, realBrowser, model, resume };
 }
 
 function main() {
-  const { mockRequested, mockPath, delayMs, realBrowser, model } = parseArgs(process.argv.slice(2));
+  const { mockRequested, mockPath, delayMs, realBrowser, model, resume } = parseArgs(process.argv.slice(2));
   if (mockRequested) {
     if (!mockPath) {
       emit({ type: 'fatal', message: 'The --mock flag needs a scenario path, like: --mock scenarios/insurance-claim.json' });
@@ -491,7 +518,7 @@ function main() {
     }
     runMock(mockPath, delayMs);
   } else {
-    runLive(realBrowser, model).catch((err) => {
+    runLive(realBrowser, model, resume).catch((err) => {
       diag(`unexpected live-mode failure: ${err && err.stack ? err.stack : String(err)}`);
       emit({
         type: 'fatal',

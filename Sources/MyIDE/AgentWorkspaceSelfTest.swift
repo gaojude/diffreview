@@ -52,7 +52,7 @@ enum AgentWorkspaceSelfTest {
 
         client.onMessage = { message in
             switch message {
-            case .hello, .state:
+            case .hello, .state, .session:
                 break
             case .text(let text):
                 texts += 1
