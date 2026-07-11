@@ -189,6 +189,54 @@ public final class RealAgentBrowser {
         _ = execute("close")
     }
 
+    // MARK: - Login state (save / restore)
+
+    /// Saves the live browser's cookies + storage to `fileURL` via
+    /// `agent-browser state save`. Blocking — run off the main thread.
+    public func saveState(to fileURL: URL) -> AgentBrowserCommandResult {
+        lock.lock()
+        defer { lock.unlock() }
+        guard hasSessionFlag else {
+            return AgentBrowserCommandResult(ok: false, output: "Open a page first, then save the login.")
+        }
+        let result = run(arguments: ["--session", sessionID, "state", "save", fileURL.path])
+        return AgentBrowserCommandResult(ok: result.ok, output: result.output)
+    }
+
+    /// Restores cookies + storage from `fileURL` into the current session, then
+    /// reloads so the page reflects the restored login. Ensures a page exists
+    /// first (the CLI needs a live context to load state into).
+    public func loadState(from fileURL: URL) -> AgentBrowserCommandResult {
+        lock.lock()
+        defer { lock.unlock() }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return AgentBrowserCommandResult(ok: false, output: "That saved login is missing on disk.")
+        }
+        // Attach/launch as needed so there's a context to load into.
+        if let target = cdpTarget {
+            if !didConnectCDP {
+                let connect = run(arguments: ["--session", sessionID, "connect", target])
+                guard connect.ok else {
+                    return AgentBrowserCommandResult(ok: false, output: "Could not attach to Chrome at \(target): \(connect.output)")
+                }
+                didConnectCDP = true
+                hasSessionFlag = true
+            }
+        } else if !hasSessionFlag {
+            var open = ["--session", sessionID, "open", "--headed"]
+            if let profile = chromeProfile { open += ["--profile", profile] }
+            let opened = run(arguments: open)
+            guard opened.ok else {
+                return AgentBrowserCommandResult(ok: false, output: "Could not open a browser to restore into: \(opened.output)")
+            }
+            hasSessionFlag = true
+        }
+        let load = run(arguments: ["--session", sessionID, "state", "load", fileURL.path])
+        guard load.ok else { return AgentBrowserCommandResult(ok: false, output: load.output) }
+        _ = run(arguments: ["--session", sessionID, "reload"])
+        return AgentBrowserCommandResult(ok: true, output: "Login restored.")
+    }
+
     // MARK: - Process plumbing
 
     private struct CLIResult {

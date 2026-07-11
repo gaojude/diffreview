@@ -39,6 +39,11 @@ final class AgentWorkspaceWindowController: NSObject, NSWindowDelegate {
         window.contentViewController = NSHostingController(rootView: content)
         window.isReleasedWhenClosed = false
         window.delegate = self
+        // Float above other apps — this is a companion to the browser it's
+        // driving, so it should stay visible over the Chrome window, and
+        // follow the user across Spaces.
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.center()
 
         self.window = window

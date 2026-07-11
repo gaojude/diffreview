@@ -55,24 +55,38 @@ final class AgentWorkspaceController: ObservableObject {
     @Published private(set) var currentRealURL: String?
     @Published private(set) var isExecutingCommand = false
 
+    /// Saved logins (real-browser mode only). First-class "stay signed in".
+    @Published private(set) var savedSessions: [BrowserSessionStore.SavedSession] = []
+    @Published private(set) var isSavingSession = false
+
     private let portal = MapleLifePortal()
     private let engine: AgentBrowserEngine
     private var recorder = AutomationRecorder()
     private let store: AutomationStore
+    private let sessionStore: BrowserSessionStore
     private let client = AgentHarnessClient()
     private var realBrowser: RealAgentBrowser?
     private var lastAssistantText: String?
     private var replayTask: Task<Void, Never>?
 
-    init(store: AutomationStore = AutomationStore(directory: AutomationStore.defaultDirectory())) {
+    init(
+        store: AutomationStore = AutomationStore(directory: AutomationStore.defaultDirectory()),
+        sessionStore: BrowserSessionStore = BrowserSessionStore(directory: BrowserSessionStore.defaultDirectory())
+    ) {
         self.store = store
+        self.sessionStore = sessionStore
         engine = AgentBrowserEngine(sites: [portal])
         engine.onEvent = { [weak self] event in
             self?.handleEngineEvent(event)
         }
         automations = store.list()
+        sessionStore.prepareDirectory()
+        savedSessions = sessionStore.list()
         recorder.start()
     }
+
+    /// Whether the save/restore-login controls should show (real browser only).
+    var supportsSavedLogins: Bool { browserIsReal }
 
     /// Plain-English status for the chip above the terminal.
     var statusText: String {
@@ -359,6 +373,52 @@ final class AgentWorkspaceController: ObservableObject {
     func deleteAutomation(_ automation: Automation) {
         store.delete(slug: automation.slug)
         automations = store.list()
+    }
+
+    // MARK: - Saved logins
+
+    /// Snapshots the current browser's cookies + storage under `name` so the
+    /// user stays signed in across sessions.
+    func saveLogin(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let real = realBrowser, !trimmed.isEmpty, !isSavingSession else { return }
+        let slug = BrowserSessionStore.slug(from: trimmed)
+        let fileURL = sessionStore.stateFileURL(forSlug: slug)
+        let store = sessionStore
+        isSavingSession = true
+        Task { @MainActor in
+            let result = await Task.detached { real.saveState(to: fileURL) }.value
+            self.isSavingSession = false
+            if result.ok {
+                store.recordMetadata(name: trimmed, slug: slug, savedAt: Date())
+                self.savedSessions = store.list()
+                self.appendStatus("Saved your login as “\(trimmed)”. I'll restore it next time so you stay signed in.")
+            } else {
+                self.appendStatus("I couldn't save the login: \(result.output)")
+            }
+        }
+    }
+
+    /// Restores a saved login into the live browser (attaching/opening first).
+    func restoreLogin(_ session: BrowserSessionStore.SavedSession) {
+        guard let real = realBrowser, !isBusy else { return }
+        let fileURL = session.fileURL
+        appendStatus("Restoring your “\(session.name)” login…")
+        phase = .working
+        Task { @MainActor in
+            let result = await Task.detached { real.loadState(from: fileURL) }.value
+            self.currentRealURL = self.currentRealURL // no-op; keep pane fresh
+            self.actionRevision += 1
+            self.phase = (self.mode == .none) ? .offline("Assistant offline") : .ready
+            self.appendStatus(result.ok
+                ? "Restored “\(session.name)”. If a page is open, it should now show you as signed in."
+                : "I couldn't restore that login: \(result.output)")
+        }
+    }
+
+    func deleteSavedLogin(_ session: BrowserSessionStore.SavedSession) {
+        sessionStore.delete(slug: session.slug)
+        savedSessions = sessionStore.list()
     }
 
     // MARK: - Harness messages

@@ -325,6 +325,24 @@ private func checkRealBrowserSupport() {
         "wait --load networkidle",
         "find text \"Sign In\" click",
     ], "real recordings keep open/wait/find and skip snapshot/get")
+
+    // Saved-login store round-trip.
+    let scratch = FileManager.default.temporaryDirectory
+        .appendingPathComponent("myide-session-checks-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    let sessions = BrowserSessionStore(directory: scratch)
+    sessions.prepareDirectory()
+    check(sessions.list().isEmpty, "no saved logins initially")
+    let slug = BrowserSessionStore.slug(from: "My QQ Login!")
+    check(slug == "my-qq-login", "login names slug to kebab-case")
+    let stateURL = sessions.stateFileURL(forSlug: slug)
+    try? Data("{\"cookies\":[]}".utf8).write(to: stateURL)  // stand in for agent-browser state save
+    check(sessions.recordMetadata(name: "My QQ Login!", slug: slug, savedAt: Date(timeIntervalSince1970: 1_000)), "records login metadata")
+    let listed = sessions.list()
+    check(listed.count == 1 && listed.first?.name == "My QQ Login!", "lists the saved login by its human name")
+    check(listed.first?.fileURL.lastPathComponent == "my-qq-login.json", "saved login points at its state file")
+    check(sessions.delete(slug: slug), "deletes the saved login")
+    check(sessions.list().isEmpty, "list empty after delete")
 }
 
 // MARK: - Line buffer
