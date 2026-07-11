@@ -53,6 +53,18 @@ struct AgentTerminalPaneView: View {
                     .foregroundStyle(Self.accent)
             }
             Spacer()
+            Button {
+                controller.clearConversation()
+            } label: {
+                Label("New chat", systemImage: "square.and.pencil")
+                    .font(.caption)
+                    .labelStyle(.titleAndIcon)
+            }
+            .buttonStyle(.borderless)
+            .tint(Self.accent)
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(controller.mode == .none || controller.isBusy)
+            .help("Clear the conversation and start fresh (⌘N)")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)

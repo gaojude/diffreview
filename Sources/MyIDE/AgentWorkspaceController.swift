@@ -68,6 +68,10 @@ final class AgentWorkspaceController: ObservableObject {
     private var realBrowser: RealAgentBrowser?
     private var lastAssistantText: String?
     private var replayTask: Task<Void, Never>?
+    /// Remembered so "New chat" can relaunch the harness with a fresh context.
+    private var launchSpec: AgentHarnessClient.LaunchSpec?
+    private var greeting = "Hi! Tell me what you'd like me to do."
+    private var isRestarting = false
 
     init(
         store: AutomationStore = AutomationStore(directory: AutomationStore.defaultDirectory()),
@@ -209,7 +213,17 @@ final class AgentWorkspaceController: ObservableObject {
             Task { @MainActor in self?.handleTermination(code) }
         }
 
-        switch client.launch(AgentHarnessClient.LaunchSpec(nodeURL: node, scriptURL: script, arguments: arguments)) {
+        let spec = AgentHarnessClient.LaunchSpec(nodeURL: node, scriptURL: script, arguments: arguments)
+        launchSpec = spec
+        if useMock {
+            greeting = "Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim”."
+        } else if realExecutor != nil {
+            greeting = "Hi! Tell me what to do on the web — I'll open a Chrome window you can watch. If a site needs your password, I'll hand the keyboard to you."
+        } else {
+            greeting = "Hi! Tell me what you'd like me to do in the browser."
+        }
+
+        switch client.launch(spec) {
         case .running:
             realBrowser = realExecutor
             browserIsReal = realExecutor != nil
@@ -221,16 +235,8 @@ final class AgentWorkspaceController: ObservableObject {
             }
             mode = useMock ? .mock : .live
             phase = .ready
-            if useMock {
-                appendStatus("Hi! I'm in demo mode. Ask me anything — try “Submit my massage claim”.")
-            } else if browserIsReal {
-                appendStatus("Hi! Tell me what to do on the web — I'll open a Chrome window you can watch. If a site needs your password, I'll hand the keyboard to you.")
-                if let linkNote {
-                    appendStatus(linkNote)
-                }
-            } else {
-                appendStatus("Hi! Tell me what you'd like me to do in the browser.")
-            }
+            appendStatus(greeting)
+            if let linkNote { appendStatus(linkNote) }
             // Scripted entry point: launch with a goal and the session starts
             // itself — no typing needed (demos, tests, "open and go" shortcuts).
             if let kickoff = environment["MYIDE_ASSISTANT_PROMPT"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -241,6 +247,38 @@ final class AgentWorkspaceController: ObservableObject {
         case .failed(let message):
             phase = .offline(message)
             appendStatus("I couldn't start my helper: \(message)")
+        }
+    }
+
+    /// Clears the conversation and starts a fresh agent session so the context
+    /// window doesn't bloat over a long session. The harness process is
+    /// restarted (new SDK query = empty context); the browser, its logins, and
+    /// saved automations are all untouched.
+    func clearConversation() {
+        guard mode != .none, !isRestarting, let spec = launchSpec else { return }
+        isRestarting = true
+        replayTask?.cancel()
+        replayTask = nil
+        transcript.removeAll()
+        lastAssistantText = nil
+        canSaveAutomation = false
+        phase = .connecting
+        appendStatus("Starting a fresh chat…")
+
+        let client = self.client
+        Task { @MainActor in
+            // Stop the old harness off the main actor (stop() briefly blocks).
+            await Task.detached { client.stop() }.value
+            switch client.launch(spec) {
+            case .running:
+                self.transcript.removeAll()
+                self.phase = .ready
+                self.appendStatus(self.greeting)
+            case .failed(let message):
+                self.phase = .offline(message)
+                self.appendStatus("I couldn't start a fresh chat: \(message)")
+            }
+            self.isRestarting = false
         }
     }
 
@@ -470,6 +508,9 @@ final class AgentWorkspaceController: ObservableObject {
     }
 
     private func handleTermination(_ code: Int32) {
+        // A deliberate restart (New chat) stops the old process on purpose;
+        // don't flip the UI to "offline" while the new one is coming up.
+        guard !isRestarting else { return }
         guard mode != .none else { return }
         mode = .none
         if case .offline = phase {} else {
