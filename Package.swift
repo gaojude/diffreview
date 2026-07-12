@@ -5,7 +5,11 @@ let package = Package(
     name: "MyIDE",
     platforms: [.macOS("26.0")],
     dependencies: [
-        .package(url: "https://github.com/smittytone/HighlighterSwift.git", from: "3.1.0"),
+        // Vendored (Vendor/HighlighterSwift) with one change: resource-bundle
+        // resolution that works inside the packaged .app and fails soft. The
+        // upstream release relies on SwiftPM's generated `Bundle.module`,
+        // which traps outside the original build directory (0.1.0 crash).
+        .package(path: "Vendor/HighlighterSwift"),
     ],
     targets: [
         // Pure, Foundation-only logic — no SwiftUI/AppKit, so it is directly
