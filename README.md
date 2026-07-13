@@ -25,6 +25,9 @@ by a thin `diffreview` command — like `code .`, but native.
   (one stop per hunk), with a "Change 3 of 41" toast.
 - **Per-commit scope** — a toolbar picker re-scopes the document to a single commit's diff,
   or back to all branch changes.
+- **The branch's PR, one click away** — when the GitHub CLI (`gh`) resolves a pull request
+  for the reviewed branch, a `#123` toolbar button opens it in your browser (and flags
+  `Draft` / `Merged` / `Closed` states). No `gh`, no PR: no button.
 - **⌘-click definitions & references** — TypeScript-aware (tsserver-backed): ⌘-click a
   usage to open its definition in a floating Explorer panel that never disturbs the diff;
   ⌘-click a declaration to drop down everywhere it's used.
@@ -39,6 +42,7 @@ by a thin `diffreview` command — like `code .`, but native.
 - macOS 26+ (Liquid Glass APIs require the macOS 26 SDK)
 - For ⌘-click definitions: Node.js plus a `typescript` install reachable from the reviewed
   project (its own `node_modules` works)
+- For the PR toolbar button: the GitHub CLI (`gh`), logged in (`gh auth login`)
 - To build from source: full **Xcode** (the SwiftUI macro plugins ship with Xcode, not the
   Command Line Tools), with the license accepted: `sudo xcodebuild -license accept`
 

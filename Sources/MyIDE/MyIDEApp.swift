@@ -15,6 +15,11 @@ struct MyIDEApp: App {
             Foundation.exit(0)
         }
 
+        if CommandLine.arguments.contains("--pr-probe") {
+            Self.runPullRequestProbe()
+            Foundation.exit(0)
+        }
+
         let initialRootURL = Self.rootURLArgument()
         let session = AppSession(initialRootURL: initialRootURL)
         _session = StateObject(wrappedValue: session)
@@ -78,6 +83,28 @@ struct MyIDEApp: App {
             return "Retry diffreview Command Line Tool Installation…"
         }
         return "Install diffreview Command Line Tool…"
+    }
+
+    /// Headless probe for branch→PR detection: prints what the toolbar PR button would show
+    /// for a directory, without opening a window. Run via `MyIDE --pr-probe /path/to/repo`.
+    /// Needs `gh` and its login like the real feature — a manual check, not part of
+    /// selftest.sh (which must stay network-free).
+    @MainActor
+    private static func runPullRequestProbe() {
+        guard let flagIndex = CommandLine.arguments.firstIndex(of: "--pr-probe"),
+              flagIndex + 1 < CommandLine.arguments.count else {
+            FileHandle.standardError.write(Data("usage: MyIDE --pr-probe <directory>\n".utf8))
+            Foundation.exit(2)
+        }
+        let directory = URL(fileURLWithPath: CommandLine.arguments[flagIndex + 1], isDirectory: true)
+        guard let pullRequest = GitHubPullRequestLocator.detect(in: directory) else {
+            print("no PR detected for \(directory.path)")
+            return
+        }
+        print("PR #\(pullRequest.number) state=\(pullRequest.state) draft=\(pullRequest.isDraft)")
+        print("title: \(pullRequest.title)")
+        print("url: \(pullRequest.url.absoluteString)")
+        print("button: \(RootView.pullRequestLabel(pullRequest))")
     }
 
     /// Headless harness for the review-comments flow: drives the real controller through

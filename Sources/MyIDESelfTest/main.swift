@@ -758,6 +758,56 @@ do {
     }
 }
 
+// MARK: - GitHubPullRequestLocator: gh output parsing and process environment
+
+section("GitHubPullRequestLocator.parse")
+do {
+    // Verbatim shape of `gh pr view --json number,title,url,state,isDraft`.
+    let merged = GitHubPullRequestLocator.parse(Data(
+        #"{"isDraft":false,"number":1,"state":"MERGED","title":"Vendor HighlighterSwift","url":"https://github.com/gaojude/diffreview/pull/1"}"#.utf8
+    ))
+    check(merged?.number == 1, "number decoded")
+    check(merged?.title == "Vendor HighlighterSwift", "title decoded")
+    check(merged?.url.absoluteString == "https://github.com/gaojude/diffreview/pull/1", "url decoded")
+    check(merged?.state == .merged, "MERGED -> .merged")
+    check(merged?.isDraft == false, "isDraft decoded")
+
+    let draft = GitHubPullRequestLocator.parse(Data(
+        #"{"isDraft":true,"number":2,"state":"OPEN","title":"wip","url":"https://github.com/o/r/pull/2"}"#.utf8
+    ))
+    check(draft?.state == .open && draft?.isDraft == true, "open draft PR decoded")
+
+    let novel = GitHubPullRequestLocator.parse(Data(
+        #"{"isDraft":false,"number":3,"state":"SUPERSEDED","title":"x","url":"https://github.com/o/r/pull/3"}"#.utf8
+    ))
+    check(novel?.state == .unknown("SUPERSEDED"), "unrecognized state preserved verbatim")
+
+    check(GitHubPullRequestLocator.parse(Data("no pull requests found".utf8)) == nil,
+          "non-JSON gh error text -> nil")
+    check(GitHubPullRequestLocator.parse(Data(#"{"number":4}"#.utf8)) == nil,
+          "missing fields -> nil")
+    check(GitHubPullRequestLocator.parse(Data()) == nil, "empty output -> nil")
+}
+
+section("GitHubPullRequestLocator.environmentWithSearchPaths")
+do {
+    // GUI launches get the bare system PATH; gh lives in a Homebrew prefix.
+    let gui = GitHubPullRequestLocator.environmentWithSearchPaths(["PATH": "/usr/bin:/bin"])
+    check(gui["PATH"] == "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
+          "Homebrew prefixes appended for GUI launches")
+    check(gui["GH_NO_UPDATE_NOTIFIER"] == "1", "gh update notifier suppressed")
+
+    let terminal = GitHubPullRequestLocator.environmentWithSearchPaths(
+        ["PATH": "/opt/homebrew/bin:/usr/bin"]
+    )
+    check(terminal["PATH"] == "/opt/homebrew/bin:/usr/bin:/usr/local/bin",
+          "already-present prefix not duplicated")
+
+    let empty = GitHubPullRequestLocator.environmentWithSearchPaths([:])
+    check(empty["PATH"] == "/opt/homebrew/bin:/usr/local/bin",
+          "missing PATH still gains the Homebrew prefixes")
+}
+
 print("")
 if failures == 0 {
     print("PASS — all self-tests passed")
