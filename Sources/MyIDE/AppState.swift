@@ -24,6 +24,11 @@ final class AppState: ObservableObject {
     /// Metadata for the branch/base currently shown by the content pane.
     @Published private(set) var changeTreeState: ChangeTreeState = .loading
 
+    /// The branch's pull request, when `gh` can resolve one. Drives the toolbar "open PR"
+    /// button; stays nil (button hidden) when gh is missing, unauthenticated, or the
+    /// branch has no PR.
+    @Published private(set) var pullRequest: GitHubPullRequest?
+
     /// Durable user configuration. Adjusted via commands and persisted as a single settings blob.
     @Published private(set) var configuration: AppConfiguration {
         didSet { configurationStore.save(configuration) }
@@ -77,6 +82,15 @@ final class AppState: ObservableObject {
                 GitChangeSet.listCommits(for: rootURL)
             }.value
             commits = listed
+        }
+
+        // PR detection shells out to `gh` (network); it must never delay the diff. The
+        // button just appears when the answer lands.
+        Task { @MainActor in
+            let detected = await Task.detached(priority: .utility) {
+                GitHubPullRequestLocator.detect(in: rootURL)
+            }.value
+            pullRequest = detected
         }
     }
 

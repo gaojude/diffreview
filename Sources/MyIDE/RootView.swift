@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MyIDECore
 
@@ -37,6 +38,20 @@ struct RootView: View {
                 }
                 .help(showCommentsPanel ? "Hide the review comments" : "Show the review comments")
                 .accessibilityIdentifier("comments-panel-toggle")
+            }
+            // The branch's pull request, one click from the local review to the canonical
+            // remote one. Hidden until `gh` resolves a PR for the branch.
+            ToolbarItem(placement: .navigation) {
+                if let pullRequest = appState.pullRequest {
+                    Button {
+                        NSWorkspace.shared.open(pullRequest.url)
+                    } label: {
+                        Label(Self.pullRequestLabel(pullRequest), systemImage: "arrow.triangle.pull")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .help("Open PR #\(pullRequest.number) — \(pullRequest.title)")
+                    .accessibilityIdentifier("open-pull-request")
+                }
             }
             // Jump between change blocks without scrolling through diff context.
             ToolbarItem(placement: .primaryAction) {
@@ -104,6 +119,22 @@ struct RootView: View {
             }
         }
         .task { appState.loadChangeTreeIfNeeded() }
+    }
+
+    /// Compact PR button title: the number, plus the one state that changes how you'd read
+    /// the review (a draft, or a PR that's already merged/closed under you).
+    static func pullRequestLabel(_ pullRequest: GitHubPullRequest) -> String {
+        var label = "#\(pullRequest.number)"
+        if pullRequest.isDraft {
+            label += " · Draft"
+            return label
+        }
+        switch pullRequest.state {
+        case .merged: label += " · Merged"
+        case .closed: label += " · Closed"
+        case .open, .unknown: break
+        }
+        return label
     }
 
     /// Compact label for the commit menu: the picked commit's short SHA, or the whole branch.
