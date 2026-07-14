@@ -20,6 +20,11 @@ struct MyIDEApp: App {
             Foundation.exit(0)
         }
 
+        if CommandLine.arguments.contains("--moves-probe") {
+            Self.runMovedBlocksProbe()
+            Foundation.exit(0)
+        }
+
         if CommandLine.arguments.contains("--project-tabs-self-test") {
             Self.runProjectTabsSelfTest()
             Foundation.exit(0)
@@ -135,6 +140,38 @@ struct MyIDEApp: App {
         print("title: \(pullRequest.title)")
         print("url: \(pullRequest.url.absoluteString)")
         print("button: \(RootView.pullRequestLabel(pullRequest))")
+    }
+
+    /// Headless probe for move detection: prints every moved block the app would link for a
+    /// directory's branch diff, plus the document rows each end resolves to in both layouts —
+    /// what the chips and jumps consume. Run via `MyIDE --moves-probe /path/to/repo`.
+    @MainActor
+    private static func runMovedBlocksProbe() {
+        guard let flagIndex = CommandLine.arguments.firstIndex(of: "--moves-probe"),
+              flagIndex + 1 < CommandLine.arguments.count else {
+            FileHandle.standardError.write(Data("usage: MyIDE --moves-probe <directory>\n".utf8))
+            Foundation.exit(2)
+        }
+        let directory = URL(fileURLWithPath: CommandLine.arguments[flagIndex + 1], isDirectory: true)
+        guard case .repository(let context) = GitChangeSet.load(for: directory) else {
+            print("not a git repository: \(directory.path)")
+            Foundation.exit(1)
+        }
+        let entries = GitChangeSet.loadDocumentEntries(for: context)
+        let blocks = MovedBlockDetector.detect(entries: entries)
+        print("\(blocks.count) moved block(s) on \(context.branchName)")
+        let split = SideBySideDocument.build(entries: entries, layout: .split)
+        let unified = SideBySideDocument.build(entries: entries, layout: .unified)
+        for (index, block) in blocks.enumerated() {
+            print("[\(index)] \(block.source.path):\(block.source.lines) -> \(block.destination.path):\(block.destination.lines) (\(block.lineCount) lines)")
+            func rows(_ document: SideBySideDocument, _ name: String) {
+                let source = document.rowRange(forOldFileLines: block.source.lines, inSectionPath: block.source.path)
+                let destination = document.rowRange(forNewFileLines: block.destination.lines, inSectionPath: block.destination.path)
+                print("    \(name): source rows \(source.map(String.init(describing:)) ?? "nil"), destination rows \(destination.map(String.init(describing:)) ?? "nil")")
+            }
+            rows(split, "split")
+            rows(unified, "unified")
+        }
     }
 
     /// Headless harness for the multi-project window: drives the real `AppSession` through

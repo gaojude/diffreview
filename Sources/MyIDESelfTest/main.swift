@@ -404,6 +404,13 @@ do {
           "comment file lines map back to rows")
     check(doc.rowRange(forNewFileLines: 999...999, inSectionPath: "src/x.ts") == nil,
           "unknown file lines map to no rows")
+    // The old-file mirror, used to resolve a moved block's source (deleted lines).
+    check(doc.rowRange(forOldFileLines: 4...4, inSectionPath: "src/x.ts") == (headerRows + 2)...(headerRows + 2),
+          "old-file lines map back to deletion rows")
+    check(doc.rowRange(forOldFileLines: 21...21, inSectionPath: "src/x.ts") == (headerRows + 7)...(headerRows + 7),
+          "old-file mapping works across hunks")
+    check(doc.rowRange(forOldFileLines: 999...999, inSectionPath: "src/x.ts") == nil,
+          "unknown old-file lines map to no rows")
 
     // Change navigation stops: GitHub's granularity — the first changed row of each hunk.
     // The fixture has two hunks, so two stops, landing on old4/new4 and old21/new22.
@@ -466,6 +473,8 @@ do {
     // Rows are 1-based: header block, keep3, old4, then the additions.
     check(unified.rowRange(forNewFileLines: 4...5, inSectionPath: "src/x.ts")
           == (headerRows + 3)...(headerRows + 4), "unified comment mapping via new-file lines")
+    check(unified.rowRange(forOldFileLines: 4...4, inSectionPath: "src/x.ts")
+          == (headerRows + 2)...(headerRows + 2), "unified old-file mapping finds the inline deletion")
     check(unified.sections[0].additions == 3 && unified.sections[0].deletions == 2,
           "unified section stats match")
 
@@ -483,6 +492,209 @@ do {
     check(collapsed.sections[1].headerLine == headerRows + 2, "next section follows separator row")
     // Section 1 is excluded by collapse; section 2 has no body rows to highlight.
     check(collapsed.highlightSpans.isEmpty, "collapsed sections are not highlighted")
+}
+
+// MARK: - MovedBlockDetector (moved code across the change set)
+
+section("MovedBlockDetector")
+do {
+    func file(_ path: String) -> GitChangedFile {
+        GitChangedFile(
+            path: path,
+            repositoryPath: path,
+            url: URL(fileURLWithPath: "/repo/\(path)"),
+            oldPath: nil,
+            status: .modified
+        )
+    }
+    func entry(_ path: String, _ body: String) -> ChangeSetDocument.Entry {
+        .init(file: file(path), body: body, isPlaceholder: false)
+    }
+
+    // Cross-file move: a block leaves boundary.tsx and lands in marker.tsx, re-indented and
+    // with a comment inserted mid-block (the vercel/front#76914 shape). The run before the
+    // inserted comment links; the short tail after it stays below the significance threshold.
+    let boundaryPatch = """
+    diff --git a/src/boundary.tsx b/src/boundary.tsx
+    --- a/src/boundary.tsx
+    +++ b/src/boundary.tsx
+    @@ -4,9 +4,2 @@
+     export function Boundary({ boundaryId }) {
+    -  useLayoutEffect(() => {
+    -    recordFallbackCommit(boundaryId, {
+    -      name,
+    -      hasExplicitName,
+    -      badFallback,
+    -    });
+    -  }, [boundaryId]);
+       return children;
+    """
+    let markerPatch = """
+    diff --git a/src/marker.tsx b/src/marker.tsx
+    --- a/src/marker.tsx
+    +++ b/src/marker.tsx
+    @@ -1,2 +1,11 @@
+     export function Marker({ boundaryId }) {
+    +    useLayoutEffect(() => {
+    +      recordFallbackCommit(boundaryId, {
+    +        name,
+    +        hasExplicitName,
+    +        // placeholder comment inserted during the move
+    +        badFallback,
+    +      });
+    +    }, [boundaryId]);
+       return children;
+    """
+    let crossFile = MovedBlockDetector.detect(entries: [
+        entry("src/boundary.tsx", boundaryPatch),
+        entry("src/marker.tsx", markerPatch),
+    ])
+    check(crossFile.count == 1, "cross-file move detected once")
+    check(crossFile.first?.source == MovedBlock.Endpoint(path: "src/boundary.tsx", lines: 5...8),
+          "source is the removed run's old-file lines")
+    check(crossFile.first?.destination == MovedBlock.Endpoint(path: "src/marker.tsx", lines: 2...5),
+          "destination is the added run's new-file lines, matched despite re-indentation")
+    check(crossFile.first?.isWithinOneFile == false, "cross-file move spans two files")
+
+    // Same-file move across hunks: source and destination live in one section.
+    let sameFilePatch = """
+    diff --git a/src/same.ts b/src/same.ts
+    --- a/src/same.ts
+    +++ b/src/same.ts
+    @@ -2,7 +2,3 @@
+     top
+    -function helperMovedDown() {
+    -  const total = alpha + beta;
+    -  return total * gamma;
+    -}
+     middle
+    @@ -30,3 +26,7 @@
+     bottom
+    +function helperMovedDown() {
+    +  const total = alpha + beta;
+    +  return total * gamma;
+    +}
+     tail
+    """
+    let sameFile = MovedBlockDetector.detect(entries: [entry("src/same.ts", sameFilePatch)])
+    check(sameFile.count == 1, "same-file move detected once")
+    check(sameFile.first?.source == MovedBlock.Endpoint(path: "src/same.ts", lines: 3...6),
+          "same-file source lines")
+    check(sameFile.first?.destination == MovedBlock.Endpoint(path: "src/same.ts", lines: 27...30),
+          "same-file destination lines")
+    check(sameFile.first?.isWithinOneFile == true, "same-file move flagged as within one file")
+
+    // An in-place edit (re-indent) is deletions and additions in the SAME contiguous
+    // change block — the two halves of one modification, never a move.
+    let indentPatch = """
+    diff --git a/src/indent.ts b/src/indent.ts
+    --- a/src/indent.ts
+    +++ b/src/indent.ts
+    @@ -1,5 +1,5 @@
+     wrapper {
+    -const first = computeFirstValue();
+    -const second = computeSecondValue();
+    -const third = computeThirdValue();
+    +  const first = computeFirstValue();
+    +  const second = computeSecondValue();
+    +  const third = computeThirdValue();
+     }
+    """
+    check(MovedBlockDetector.detect(entries: [entry("src/indent.ts", indentPatch)]).isEmpty,
+          "in-place re-indent is not a move")
+
+    // Two matching lines are coincidence: below the minimum run length.
+    let shortPatchA = """
+    diff --git a/a.ts b/a.ts
+    --- a/a.ts
+    +++ b/a.ts
+    @@ -1,3 +1,1 @@
+     keepA
+    -const sharedValue = computeSharedValue();
+    -return sharedValue + somethingElse();
+    """
+    let shortPatchB = """
+    diff --git a/b.ts b/b.ts
+    --- a/b.ts
+    +++ b/b.ts
+    @@ -1,1 +1,3 @@
+     keepB
+    +const sharedValue = computeSharedValue();
+    +return sharedValue + somethingElse();
+    """
+    check(MovedBlockDetector.detect(entries: [entry("a.ts", shortPatchA), entry("b.ts", shortPatchB)]).isEmpty,
+          "two-line echo is below the minimum run length")
+
+    // Brace/blank noise never qualifies, no matter how long the run.
+    let noisePatchA = """
+    diff --git a/a.ts b/a.ts
+    --- a/a.ts
+    +++ b/a.ts
+    @@ -1,5 +1,1 @@
+     keepA
+    -  });
+    -  }
+    -}
+    -)
+    """
+    let noisePatchB = """
+    diff --git a/b.ts b/b.ts
+    --- a/b.ts
+    +++ b/b.ts
+    @@ -1,1 +1,5 @@
+     keepB
+    +  });
+    +  }
+    +}
+    +)
+    """
+    check(MovedBlockDetector.detect(entries: [entry("a.ts", noisePatchA), entry("b.ts", noisePatchB)]).isEmpty,
+          "brace-only runs stay below the significance threshold")
+
+    check(MovedBlockDetector.detect(entries: []).isEmpty, "no entries, no moves")
+
+    // A renamed file's per-file patch is a full new-file patch (every carried-over line is
+    // '+'), so its content must never enter the added pool: a deletion elsewhere that matches
+    // code the renamed file always contained is NOT a move into it.
+    func renamedEntry(_ path: String, _ body: String) -> ChangeSetDocument.Entry {
+        .init(
+            file: GitChangedFile(
+                path: path,
+                repositoryPath: path,
+                url: URL(fileURLWithPath: "/repo/\(path)"),
+                oldPath: "src/legacy.ts",
+                status: .renamed
+            ),
+            body: body,
+            isPlaceholder: false
+        )
+    }
+    let dedupPatch = """
+    diff --git a/src/util.ts b/src/util.ts
+    --- a/src/util.ts
+    +++ b/src/util.ts
+    @@ -1,5 +1,1 @@
+     keepUtil
+    -export function computeSharedChecksum(input) {
+    -  const digest = hashInput(input);
+    -  return digest.toString(16).padStart(8, "0");
+    -}
+    """
+    let renamedPatch = """
+    diff --git a/src/archive.ts b/src/archive.ts
+    new file mode 100644
+    --- /dev/null
+    +++ b/src/archive.ts
+    @@ -0,0 +1,4 @@
+    +export function computeSharedChecksum(input) {
+    +  const digest = hashInput(input);
+    +  return digest.toString(16).padStart(8, "0");
+    +}
+    """
+    check(MovedBlockDetector.detect(entries: [
+        entry("src/util.ts", dedupPatch),
+        renamedEntry("src/archive.ts", renamedPatch),
+    ]).isEmpty, "renamed file's carried-over content is not a move destination")
 }
 
 // MARK: - TSServerMessageBuffer

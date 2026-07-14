@@ -46,6 +46,9 @@ struct ContentPaneView: View {
     @State private var scrollRequest: CodeScrollRequest?
     /// Per-file diff bodies, kept so collapse toggles rebuild without rerunning `git diff`.
     @State private var loadedEntries: [ChangeSetDocument.Entry] = []
+    /// Moved blocks detected across the change set. Keyed on file lines (not document rows),
+    /// so the same list survives every collapse/layout rebuild; rows re-resolve per document.
+    @State private var movedBlocks: [MovedBlock] = []
     @State private var loadedDocumentID: String?
     @State private var collapsedPaths: Set<String> = []
     @State private var viewStateStore: ChangeSetViewStateStore?
@@ -248,6 +251,9 @@ struct ContentPaneView: View {
                     topInset: 10,
                     fontSize: fontSize,
                     allowsCommenting: false,
+                    focusedLineRange: focusedDocumentRange,
+                    // Move sources are deleted code, which renders on this pane in split view.
+                    moveLinks: moveLinkModels(in: document, pane: .left),
                     rowKinds: document.leftKinds,
                     highlightSpans: highlightSpans(in: document, pane: .left),
                     primaryLineMap: document.leftFileLines,
@@ -256,7 +262,8 @@ struct ContentPaneView: View {
                     sectionHeaders: sectionHeaderModels(in: document),
                     onHeaderLineToggle: { line in toggleCollapse(atDocumentLine: line) },
                     onSectionToggle: { path in toggleCollapse(path: path) },
-                    onSectionOpen: { path in openSection(path: path) }
+                    onSectionOpen: { path in openSection(path: path) },
+                    onMoveLinkClick: { link in jumpToMoveCounterpart(link) }
                 )
                     .frame(width: leftWidth)
                     .accessibilityIdentifier("diff-left")
@@ -290,6 +297,7 @@ struct ContentPaneView: View {
                     fontSize: fontSize,
                     focusedLineRange: focusedDocumentRange,
                     commentedLineRanges: rightCommentRanges(in: document),
+                    moveLinks: moveLinkModels(in: document, pane: document.layout == .split ? .right : .unified),
                     rowKinds: document.rightKinds,
                     highlightSpans: highlightSpans(in: document, pane: document.layout == .split ? .right : .unified),
                     primaryLineMap: document.rightFileLines,
@@ -314,7 +322,8 @@ struct ContentPaneView: View {
                     onSectionToggle: { path in toggleCollapse(path: path) },
                     onSectionOpen: { path in openSection(path: path) },
                     onFindResults: { diffFind.matchCount = $0 },
-                    onCommentMarkerClick: { rows in selectComment(atDocumentRows: rows) }
+                    onCommentMarkerClick: { rows in selectComment(atDocumentRows: rows) },
+                    onMoveLinkClick: { link in jumpToMoveCounterpart(link) }
                 )
                     .accessibilityIdentifier("diff-right")
 
@@ -764,6 +773,78 @@ struct ContentPaneView: View {
         }
     }
 
+    // MARK: - Moved code links
+
+    /// Chip models for one pane. Sources (deleted code) render on the left pane in split
+    /// layout and inline in unified; destinations (added code) on the right/unified pane.
+    /// Blocks whose end is collapsed resolve to no rows and simply drop their chip.
+    private func moveLinkModels(in document: SideBySideDocument, pane: DiffPane) -> [MoveLinkModel] {
+        guard !movedBlocks.isEmpty else { return [] }
+        var models: [MoveLinkModel] = []
+        for (index, block) in movedBlocks.enumerated() {
+            if pane != .right,
+               let rows = document.rowRange(forOldFileLines: block.source.lines, inSectionPath: block.source.path) {
+                models.append(moveLinkModel(block, index: index, role: .source, rows: rows))
+            }
+            if pane != .left,
+               let rows = document.rowRange(forNewFileLines: block.destination.lines, inSectionPath: block.destination.path) {
+                models.append(moveLinkModel(block, index: index, role: .destination, rows: rows))
+            }
+        }
+        return models
+    }
+
+    private func moveLinkModel(
+        _ block: MovedBlock,
+        index: Int,
+        role: MoveLinkModel.Role,
+        rows: ClosedRange<Int>
+    ) -> MoveLinkModel {
+        let counterpart = role == .source ? block.destination : block.source
+        let label = block.isWithinOneFile
+            ? "line \(counterpart.lines.lowerBound)"
+            : (counterpart.path as NSString).lastPathComponent
+        let lines = counterpart.lines.count == 1
+            ? "line \(counterpart.lines.lowerBound)"
+            : "lines \(counterpart.lines.lowerBound)–\(counterpart.lines.upperBound)"
+        return MoveLinkModel(
+            blockIndex: index,
+            role: role,
+            rows: rows,
+            counterpartLabel: label,
+            counterpartDetail: "\(counterpart.path) · \(lines)"
+        )
+    }
+
+    /// Chip clicked: bring the block's other end into view, expanding its file if collapsed —
+    /// the same choreography as jumping to a comment, but resolved through old-file lines
+    /// when the target is the removed side.
+    private func jumpToMoveCounterpart(_ link: MoveLinkModel) {
+        guard link.blockIndex < movedBlocks.count else { return }
+        let block = movedBlocks[link.blockIndex]
+        let jumpingToDestination = link.role == .source
+        let target = jumpingToDestination ? block.destination : block.source
+        if collapsedPaths.contains(target.path) {
+            collapsedPaths.remove(target.path)
+            rebuildDocument(anchoredTo: nil)
+            persistViewState()
+        }
+        guard
+            case .document(let document) = state,
+            let section = document.section(forPath: target.path),
+            let rows = jumpingToDestination
+                ? document.rowRange(forNewFileLines: target.lines, inSectionPath: target.path)
+                : document.rowRange(forOldFileLines: target.lines, inSectionPath: target.path)
+        else {
+            showTransientStatus("Couldn't find the moved code.")
+            return
+        }
+        focusedDocumentRange = rows
+        scrollRequest = CodeScrollRequest(line: max(rows.lowerBound - 3, section.headerLine))
+        let name = (target.path as NSString).lastPathComponent
+        showTransientStatus(jumpingToDestination ? "Moved to \(name)" : "Moved from \(name)")
+    }
+
     // MARK: - Go to definition & references
 
     private func commandClickInChanges(line: Int, column: Int, anchor: CGRect) {
@@ -1051,12 +1132,14 @@ struct ContentPaneView: View {
         }
 
         state = .loading
-        let (entries, savedState) = await Task.detached(priority: .userInitiated) {
-            (GitChangeSet.loadDocumentEntries(for: context), store.load())
+        let (entries, savedState, moves) = await Task.detached(priority: .userInitiated) {
+            let entries = GitChangeSet.loadDocumentEntries(for: context)
+            return (entries, store.load(), MovedBlockDetector.detect(entries: entries))
         }.value
         if Task.isCancelled { return }
 
         loadedEntries = entries
+        movedBlocks = moves
         loadedDocumentID = id
         let knownPaths = Set(entries.map(\.file.path))
         collapsedPaths = Set(savedState.collapsedPaths).intersection(knownPaths)
