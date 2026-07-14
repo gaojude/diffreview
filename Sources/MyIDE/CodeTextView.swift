@@ -85,6 +85,34 @@ struct DiffSectionHeaderModel: Equatable, Identifiable {
     }
 }
 
+/// One end of a detected moved block, resolved to document rows on a specific pane, with
+/// everything its chip needs to render and jump. Rows are re-resolved per document build
+/// (the underlying `MovedBlock` stores rebuild-stable file lines); `blockIndex` ties the
+/// chip back to that block so a click can find the counterpart.
+struct MoveLinkModel: Equatable, Identifiable {
+    enum Role: Equatable {
+        /// The removed side — the code left from here.
+        case source
+        /// The added side — the code landed here.
+        case destination
+    }
+
+    let blockIndex: Int
+    let role: Role
+    /// 1-based document rows this end occupies in the pane's text.
+    let rows: ClosedRange<Int>
+    /// Compact counterpart name shown on the chip ("marker.tsx", or "line 27" within a file).
+    let counterpartLabel: String
+    /// Tooltip detail: counterpart path and line range.
+    let counterpartDetail: String
+
+    var id: String { "\(blockIndex)-\(role == .source ? "src" : "dst")" }
+
+    var title: String {
+        role == .source ? "moved to \(counterpartLabel)" : "moved from \(counterpartLabel)"
+    }
+}
+
 /// Keeps a set of scroll views vertically locked together — the two halves of the
 /// side-by-side diff share one of these. Their documents have identical row counts, so
 /// mirroring the raw scroll offset keeps rows aligned exactly. Main-thread only, like the
@@ -135,6 +163,9 @@ struct CodeTextView: NSViewRepresentable {
     var focusedLineRange: ClosedRange<Int>?
     /// Lines that carry review comments; tinted so commented code is recognizable at a glance.
     var commentedLineRanges: [ClosedRange<Int>] = []
+    /// Detected moved blocks on this pane: rows get a violet wash over the usual add/delete
+    /// tint, and each block grows a clickable "moved to/from" chip that jumps to the other end.
+    var moveLinks: [MoveLinkModel] = []
     /// Side-by-side row metadata: when non-empty, per-row backgrounds (add/delete/filler…)
     /// replace the unified `+`/`-` prefix styling.
     var rowKinds: [SideBySideDocument.RowKind] = []
@@ -177,6 +208,8 @@ struct CodeTextView: NSViewRepresentable {
     var onFindResults: ((Int) -> Void)?
     /// Click on a comment marker bar (the range it spans).
     var onCommentMarkerClick: ((ClosedRange<Int>) -> Void)?
+    /// Click on a moved-block chip: jump to the block's other end.
+    var onMoveLinkClick: ((MoveLinkModel) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -238,6 +271,7 @@ struct CodeTextView: NSViewRepresentable {
             fontSize: fontSize,
             focusedLineRange: focusedLineRange,
             commentedLineRanges: commentedLineRanges,
+            movedLineRanges: moveLinks.map(\.rows),
             rowKinds: rowKinds,
             highlightSpans: highlightSpans,
             primaryLineMap: primaryLineMap,
@@ -260,6 +294,7 @@ struct CodeTextView: NSViewRepresentable {
             fontSize: fontSize,
             focusedLineRange: focusedLineRange,
             commentedLineRanges: commentedLineRanges,
+            movedLineRanges: moveLinks.map(\.rows),
             rowKinds: rowKinds,
             highlightSpans: highlightSpans,
             primaryLineMap: primaryLineMap,
@@ -290,6 +325,7 @@ struct CodeTextView: NSViewRepresentable {
             onOpen: onSectionOpen
         )
         coordinator.configureCommentMarkers(commentedLineRanges, fontSize: fontSize, onTap: onCommentMarkerClick)
+        coordinator.configureMoveLinks(moveLinks, fontSize: fontSize, onTap: onMoveLinkClick)
         coordinator.onFindResults = onFindResults
         coordinator.updateCommentButton()
     }
@@ -436,6 +472,24 @@ struct CodeTextView: NSViewRepresentable {
             )
         }
 
+        /// Forwards moved-block chips to the container, which draws and positions them the
+        /// same way as comment markers (fixed-row-height arithmetic on every scroll tick).
+        func configureMoveLinks(
+            _ links: [MoveLinkModel],
+            fontSize: CGFloat,
+            onTap: ((MoveLinkModel) -> Void)?
+        ) {
+            guard let containerView else { return }
+            let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            let rowHeight = textView?.layoutManager?.defaultLineHeight(for: font) ?? (fontSize * 1.3)
+            containerView.setMoveLinks(
+                links,
+                rowHeight: rowHeight,
+                contentTopInset: textView?.textContainerInset.height ?? 8,
+                onTap: onTap
+            )
+        }
+
         /// Forwards header-control models to the container, which draws and positions them.
         func configureSectionHeaders(
             _ models: [DiffSectionHeaderModel],
@@ -512,6 +566,7 @@ struct CodeTextView: NSViewRepresentable {
             // TextKit queries, so this is safe here.
             containerView?.layoutSectionHeaders()
             containerView?.layoutCommentMarkers()
+            containerView?.layoutMoveLinks()
             containerView?.refreshGutter()
             updateCommentButton()
             scheduleViewportCallbacks()
@@ -640,6 +695,7 @@ struct CodeTextView: NSViewRepresentable {
             fontSize: CGFloat,
             focusedLineRange: ClosedRange<Int>?,
             commentedLineRanges: [ClosedRange<Int>],
+            movedLineRanges: [ClosedRange<Int>],
             rowKinds: [SideBySideDocument.RowKind],
             highlightSpans: [CodeHighlightSpan],
             primaryLineMap: [Int?],
@@ -655,6 +711,7 @@ struct CodeTextView: NSViewRepresentable {
                 fontSize: fontSize,
                 focusedLineRange: focusedLineRange,
                 commentedLineRanges: commentedLineRanges,
+                movedLineRanges: movedLineRanges,
                 rowKinds: rowKinds,
                 highlightSpans: highlightSpans,
                 primaryLineMap: primaryLineMap,
@@ -771,6 +828,7 @@ struct CodeTextView: NSViewRepresentable {
                     contentKind: contentKind,
                     focusedLineRange: focusedLineRange,
                     commentedLineRanges: commentedLineRanges,
+                    movedLineRanges: movedLineRanges,
                     rowKinds: rowKinds,
                     appearance: appearance,
                     baseFont: font
@@ -1192,6 +1250,7 @@ struct CodeTextView: NSViewRepresentable {
             contentKind: CodeContentKind,
             focusedLineRange: ClosedRange<Int>?,
             commentedLineRanges: [ClosedRange<Int>],
+            movedLineRanges: [ClosedRange<Int>],
             rowKinds: [SideBySideDocument.RowKind],
             appearance: NSAppearance,
             baseFont: NSFont
@@ -1232,6 +1291,18 @@ struct CodeTextView: NSViewRepresentable {
                         }
                     }
                     location = NSMaxRange(lineRange)
+                }
+            }
+
+            // Moved code gets a violet wash over the usual add/delete tint — the same block
+            // reads as one thing in both places, like `git diff --color-moved`.
+            for range in movedLineRanges {
+                if let characterRange = characterRange(forLineRange: range, in: result.string as NSString) {
+                    result.addAttribute(
+                        .backgroundColor,
+                        value: NSColor.systemPurple.withAlphaComponent(isDark ? 0.20 : 0.12),
+                        range: characterRange
+                    )
                 }
             }
 
@@ -1402,6 +1473,7 @@ struct CodeTextView: NSViewRepresentable {
         let fontSize: CGFloat
         let focusedLineRange: ClosedRange<Int>?
         let commentedLineRanges: [ClosedRange<Int>]
+        let movedLineRanges: [ClosedRange<Int>]
         let rowKinds: [SideBySideDocument.RowKind]
         let highlightSpans: [CodeHighlightSpan]
         let primaryLineMap: [Int?]
@@ -1457,6 +1529,12 @@ final class SelectionAskContainerView: NSView {
     private var commentMarkerTap: ((ClosedRange<Int>) -> Void)?
     private var commentMarkerViews: [CommentMarkerBarView] = []
 
+    private var moveLinkModels: [MoveLinkModel] = []
+    private var moveLinkRowHeight: CGFloat = 16
+    private var moveLinkTopInset: CGFloat = 8
+    private var moveLinkTap: ((MoveLinkModel) -> Void)?
+    private var moveLinkViews: [String: NSHostingView<MoveLinkChip>] = [:]
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         configure()
@@ -1496,6 +1574,7 @@ final class SelectionAskContainerView: NSView {
         positionCommentButton()
         layoutSectionHeaders()
         layoutCommentMarkers()
+        layoutMoveLinks()
     }
 
     // MARK: - Line-number gutter
@@ -1566,6 +1645,72 @@ final class SelectionAskContainerView: NSView {
             bar.isHidden = y + height < 0 || y > bounds.height
             bar.frame = NSRect(x: 0, y: y + 1, width: 8, height: max(height - 2, 2))
             bar.onClick = { [weak self] in self?.commentMarkerTap?(range) }
+        }
+    }
+
+    // MARK: - Moved-block chips
+
+    func setMoveLinks(
+        _ models: [MoveLinkModel],
+        rowHeight: CGFloat,
+        contentTopInset: CGFloat,
+        onTap: ((MoveLinkModel) -> Void)?
+    ) {
+        moveLinkRowHeight = max(rowHeight, 1)
+        moveLinkTopInset = contentTopInset
+        moveLinkTap = onTap
+        guard models != moveLinkModels else { return }
+        moveLinkModels = models
+        layoutMoveLinks()
+    }
+
+    /// Floats one "moved to/from" chip at the right edge of each moved block's first row —
+    /// same near-viewport hosting-view recycling as the section headers, same fixed-row-height
+    /// arithmetic as the comment markers, so it's safe on every scroll tick.
+    func layoutMoveLinks() {
+        guard !moveLinkModels.isEmpty, let scrollView = installedScrollView else {
+            moveLinkViews.values.forEach { $0.removeFromSuperview() }
+            moveLinkViews.removeAll()
+            return
+        }
+        let clipOriginY = scrollView.contentView.bounds.origin.y
+        let visibleMargin: CGFloat = 300
+        var validIDs = Set<String>()
+
+        for model in moveLinkModels {
+            validIDs.insert(model.id)
+            let documentY = moveLinkTopInset + CGFloat(model.rows.lowerBound - 1) * moveLinkRowHeight
+            let y = documentY - clipOriginY
+            let isNearViewport = y > -moveLinkRowHeight - visibleMargin && y < bounds.height + visibleMargin
+
+            if isNearViewport {
+                let chip = MoveLinkChip(model: model, onTap: { [weak self] in self?.moveLinkTap?(model) })
+                let view: NSHostingView<MoveLinkChip>
+                if let existing = moveLinkViews[model.id] {
+                    existing.rootView = chip
+                    view = existing
+                } else {
+                    let created = NSHostingView(rootView: chip)
+                    moveLinkViews[model.id] = created
+                    addSubview(created, positioned: .below, relativeTo: commentButton)
+                    view = created
+                }
+                let size = view.fittingSize
+                view.frame = NSRect(
+                    x: max(bounds.width - size.width - 14, 0),
+                    y: y,
+                    width: size.width,
+                    height: size.height
+                )
+            } else if let existing = moveLinkViews[model.id] {
+                existing.removeFromSuperview()
+                moveLinkViews.removeValue(forKey: model.id)
+            }
+        }
+
+        for (id, view) in moveLinkViews where !validIDs.contains(id) {
+            view.removeFromSuperview()
+            moveLinkViews.removeValue(forKey: id)
         }
     }
 
@@ -1753,6 +1898,39 @@ final class CommentMarkerBarView: NSView {
         let path = NSBezierPath(roundedRect: rect, xRadius: 1.75, yRadius: 1.75)
         NSColor.systemTeal.withAlphaComponent(isHovering ? 1.0 : 0.9).setFill()
         path.fill()
+    }
+}
+
+/// The floating chip on a moved block: names where the code went (source) or came from
+/// (destination); clicking jumps to the other end. Violet to match the moved-row wash.
+struct MoveLinkChip: View {
+    let model: MoveLinkModel
+    let onTap: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 8.5, weight: .bold))
+                Text(model.title)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isHovering ? Color.white : Color.purple)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(isHovering ? Color.purple : Color.purple.opacity(0.14))
+            )
+            .overlay(
+                Capsule().strokeBorder(Color.purple.opacity(isHovering ? 0 : 0.35), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help(model.counterpartDetail)
+        .accessibilityIdentifier("move-link-chip")
     }
 }
 

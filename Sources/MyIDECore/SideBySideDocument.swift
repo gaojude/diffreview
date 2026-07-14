@@ -144,6 +144,18 @@ public struct SideBySideDocument: Equatable, Sendable {
         return targets
     }
 
+    /// Start line numbers from a unified `@@ -old[,n] +new[,m] @@` hunk header. Shared by the
+    /// row builder and `MovedBlockDetector`, which walk the same raw patches.
+    static func parseHunkHeader(_ line: String) -> (oldStart: Int, newStart: Int)? {
+        guard line.hasPrefix("@@ -") else { return nil }
+        let afterMarker = line.dropFirst("@@ -".count)
+        guard let plusIndex = afterMarker.firstIndex(of: "+") else { return nil }
+        let oldStartText = afterMarker.prefix(while: \.isNumber)
+        let newStartText = afterMarker[afterMarker.index(after: plusIndex)...].prefix(while: \.isNumber)
+        guard let oldStart = Int(oldStartText), let newStart = Int(newStartText) else { return nil }
+        return (oldStart, newStart)
+    }
+
     private static func isChangeKind(_ kind: RowKind) -> Bool {
         kind == .addition || kind == .deletion
     }
@@ -160,11 +172,25 @@ public struct SideBySideDocument: Equatable, Sendable {
     /// The rows displaying new-file lines `fileLines` of `path` — how a comment (stored with
     /// real file lines) finds its way back to rows on screen.
     public func rowRange(forNewFileLines fileLines: ClosedRange<Int>, inSectionPath path: String) -> ClosedRange<Int>? {
+        rowRange(for: fileLines, inSectionPath: path, using: rightFileLines)
+    }
+
+    /// The rows displaying old-file lines `fileLines` of `path` — how a moved block's source
+    /// (deleted lines, which have no new-file numbers) resolves back to rows on screen.
+    public func rowRange(forOldFileLines fileLines: ClosedRange<Int>, inSectionPath path: String) -> ClosedRange<Int>? {
+        rowRange(for: fileLines, inSectionPath: path, using: leftFileLines)
+    }
+
+    private func rowRange(
+        for fileLines: ClosedRange<Int>,
+        inSectionPath path: String,
+        using lineMap: [Int?]
+    ) -> ClosedRange<Int>? {
         guard let section = section(forPath: path), !section.isCollapsed else { return nil }
         var first: Int?
         var last: Int?
         for row in section.headerLine...section.endLine {
-            guard let fileLine = rightFileLines[row - 1], fileLines.contains(fileLine) else { continue }
+            guard let fileLine = lineMap[row - 1], fileLines.contains(fileLine) else { continue }
             if first == nil { first = row }
             last = row
         }
@@ -417,13 +443,7 @@ public struct SideBySideDocument: Equatable, Sendable {
         }
 
         static func parseHunkHeader(_ line: String) -> (oldStart: Int, newStart: Int)? {
-            guard line.hasPrefix("@@ -") else { return nil }
-            let afterMarker = line.dropFirst("@@ -".count)
-            guard let plusIndex = afterMarker.firstIndex(of: "+") else { return nil }
-            let oldStartText = afterMarker.prefix(while: \.isNumber)
-            let newStartText = afterMarker[afterMarker.index(after: plusIndex)...].prefix(while: \.isNumber)
-            guard let oldStart = Int(oldStartText), let newStart = Int(newStartText) else { return nil }
-            return (oldStart, newStart)
+            SideBySideDocument.parseHunkHeader(line)
         }
 
         func finish() -> SideBySideDocument {
