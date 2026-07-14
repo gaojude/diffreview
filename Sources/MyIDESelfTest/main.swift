@@ -184,6 +184,24 @@ do {
     check(FileSystem.resolveRootDirectory(arguments: ["prog", fileA.path], currentDirectory: "/") == nil,
           "file (not directory) -> nil")
 
+    // resolveRootDirectoryArguments: every directory argument, in order, best-effort.
+    let sub = tmp.appendingPathComponent("sub")
+    let subExpected = sub.standardizedFileURL.resolvingSymlinksInPath().path
+    let multi = FileSystem.resolveRootDirectoryArguments(
+        arguments: ["prog", tmp.path, "-psn_0_12345", sub.path],
+        currentDirectory: "/"
+    )
+    check(multi.map(\.path) == [expected, subExpected], "multiple dir args resolve in order, flags skipped")
+
+    let bestEffort = FileSystem.resolveRootDirectoryArguments(
+        arguments: ["prog", "/no/such/dir/xyz", fileA.path, sub.path],
+        currentDirectory: "/"
+    )
+    check(bestEffort.map(\.path) == [subExpected], "non-dirs are dropped, valid dirs kept")
+
+    check(FileSystem.resolveRootDirectoryArguments(arguments: ["prog"], currentDirectory: tmp.path).isEmpty,
+          "no dir args -> empty (welcome screen)")
+
     // loadForDisplay
     let textFile = tmp.appendingPathComponent("hello.txt")
     try! "hello\nworld".data(using: .utf8)!.write(to: textFile)
@@ -208,6 +226,55 @@ do {
     let withLink = FileSystem.listDirectory(tmp)
     check(withLink.first(where: { $0.name == "linkdir" })?.isDirectory == true,
           "symlink to directory classified as directory")
+}
+
+// MARK: - ProjectRoster (multi-project window policy)
+
+section("ProjectRoster")
+do {
+    var roster = ProjectRoster()
+    check(roster.count == 0 && roster.activeID == nil, "empty roster has no active project")
+
+    check(roster.attach("/a") == true, "first attach reports new")
+    check(roster.attach("/b") == true && roster.activeID == "/b", "attach adds and activates")
+    check(roster.attach("/a") == false, "re-attach reports existing")
+    check(roster.ids == ["/a", "/b"] && roster.activeID == "/a", "re-attach switches without duplicating")
+
+    roster.activate("/nope")
+    check(roster.activeID == "/a", "activating an unknown id is ignored")
+    roster.activate("/b")
+    check(roster.activeID == "/b", "activate switches to an attached id")
+
+    roster.attach("/c") // ["/a", "/b", "/c"], active "/c"
+    roster.activate("/b")
+    roster.close("/b")
+    check(roster.ids == ["/a", "/c"] && roster.activeID == "/c", "closing the active project reveals its right neighbor")
+    roster.close("/c")
+    check(roster.ids == ["/a"] && roster.activeID == "/a", "closing the last-position active project falls back left")
+
+    roster.attach("/b")
+    roster.activate("/a")
+    roster.close("/b")
+    check(roster.ids == ["/a"] && roster.activeID == "/a", "closing an inactive project keeps the active one")
+    roster.close("/nope")
+    check(roster.ids == ["/a"], "closing an unknown id is ignored")
+    roster.close("/a")
+    check(roster.count == 0 && roster.activeID == nil, "closing the last project empties the roster")
+
+    var wheel = ProjectRoster()
+    wheel.attach("/a"); wheel.attach("/b"); wheel.attach("/c")
+    wheel.activate("/c")
+    wheel.activateAdjacent(forward: true)
+    check(wheel.activeID == "/a", "next wraps from the end to the start")
+    wheel.activateAdjacent(forward: false)
+    check(wheel.activeID == "/c", "previous wraps from the start to the end")
+    wheel.activateAdjacent(forward: false)
+    check(wheel.activeID == "/b", "previous steps left")
+
+    var single = ProjectRoster()
+    single.attach("/only")
+    single.activateAdjacent(forward: true)
+    check(single.activeID == "/only", "adjacent switch is a no-op with one project")
 }
 
 // MARK: - ChangeSetDocument (pure assembly, no git)
