@@ -2,17 +2,25 @@ import Foundation
 import Combine
 import MyIDECore
 
-/// Shared observable state for a window: the opened root folder and its branch change set.
+/// Observable state for one attached project: its root folder and branch change set. The
+/// window can hold several of these at once (one per attached PR); each keeps its own scope,
+/// change tree, and pull request while the tab strip switches between them.
 @MainActor
-final class AppState: ObservableObject {
+final class AppState: ObservableObject, Identifiable {
     enum ChangeTreeState {
         case loading
         case notRepository(String)
         case loaded(GitChangeContext)
     }
 
-    /// The directory the app was opened on (immutable for the window's lifetime).
+    /// The directory the project was opened on (immutable for the project's lifetime).
     let rootURL: URL
+
+    /// Resolved root path — the identity projects are attached/deduplicated by.
+    nonisolated var id: String { rootURL.path }
+
+    /// What the project's tab is called: the folder name (worktree dirs are how PRs differ).
+    nonisolated var displayName: String { rootURL.lastPathComponent }
 
     /// Which diff this window shows: the whole branch (default) or one commit picked from
     /// the commit menu. Changing it reloads the change tree.

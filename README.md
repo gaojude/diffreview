@@ -28,6 +28,10 @@ by a thin `diffreview` command — like `code .`, but native.
 - **The branch's PR, one click away** — when the GitHub CLI (`gh`) resolves a pull request
   for the reviewed branch, a `#123` toolbar button opens it in your browser (and flags
   `Draft` / `Merged` / `Closed` states). No `gh`, no PR: no button.
+- **Many PRs, one window** — `diffreview` a second project (or drop its folder on the Dock
+  icon) and it attaches to the running window as a tab instead of opening another window.
+  Tabs are labeled with the folder name and PR number; each keeps its own scope, comments,
+  and reading position. `⌘⇧]` / `⌘⇧[` switch projects.
 - **⌘-click definitions & references** — TypeScript-aware (tsserver-backed): ⌘-click a
   usage to open its definition in a floating Explorer panel that never disturbs the diff;
   ⌘-click a declaration to drop down everywhere it's used.
@@ -70,6 +74,8 @@ Then, from inside any Git repository:
 ```sh
 diffreview .               # review the current branch's changes
 diffreview /some/repo      # or an explicit path
+diffreview wt-a wt-b       # several projects at once, one window, one tab each
+diffreview ../other-repo   # while a review is open: attaches as another tab
 ```
 
 ## Shortcuts
@@ -79,6 +85,7 @@ diffreview /some/repo      # or an explicit path
 | `⌘K`          | Comment on the selected lines                      |
 | `⌘F`          | Find (diff view or Explorer panel)                 |
 | `⌥⌘↓` / `⌥⌘↑` | Jump to next / previous change                     |
+| `⌘⇧]` / `⌘⇧[` | Show next / previous attached project              |
 | `⌘-click`     | Go to definition (on a declaration: references)    |
 | `⌘=` / `⌘−` / `⌘0` | Adjust / reset font size                      |
 | `⏎` / `⌘⏎` / `esc` | In the composer: newline / save / cancel      |

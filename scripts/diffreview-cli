@@ -15,10 +15,22 @@ done
 
 SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
 APP="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TARGET="${1:-.}"
-DIR="$(cd "$TARGET" 2>/dev/null && pwd)" || {
-  echo "diffreview: not a directory: $TARGET" >&2
-  exit 1
-}
 
-open -n "$APP" --args "$DIR"
+# Every argument is a project directory; no arguments means the current one. Validate and
+# absolutize each, rotating the resolved paths back into "$@" (POSIX sh has no arrays).
+[ $# -gt 0 ] || set -- .
+COUNT=$#
+n=0
+while [ $n -lt $COUNT ]; do
+  TARGET="$1"; shift
+  DIR="$(cd "$TARGET" 2>/dev/null && pwd)" || {
+    echo "diffreview: not a directory: $TARGET" >&2
+    exit 1
+  }
+  set -- "$@" "$DIR"
+  n=$((n + 1))
+done
+
+# Folders are sent as open-events (the app claims public.folder), so a running DiffReview
+# attaches them as tabs in its window; only a cold start launches a new instance.
+open -a "$APP" "$@"

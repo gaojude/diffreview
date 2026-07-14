@@ -111,13 +111,26 @@ struct AppRootView: View {
     let openProject: () -> Void
 
     var body: some View {
-        Group {
-            if let project = session.project {
+        VStack(spacing: 0) {
+            // The strip only exists once a second project is attached — a single-project
+            // window keeps its familiar chrome.
+            if session.projects.count > 1 {
+                ProjectTabStrip(session: session, attachProject: openProject)
+                Divider()
+            }
+            if let project = session.activeProject {
+                // `.id` swaps the whole view tree per project; per-project review state
+                // survives the swap because comments and reading position are disk-persisted
+                // per repo+branch and reload on appearance.
                 RootView(appState: project)
-                    .id(project.rootURL.path)
+                    .id(project.id)
             } else {
                 WelcomeView(cliInstaller: session.cliInstaller, openProject: openProject)
             }
+        }
+        .onChange(of: session.roster.activeID) { _, _ in
+            // Keep the window proxy icon pointing at the project being shown.
+            ProjectWindowController.shared.updateRepresentedProject(session.activeProject?.rootURL)
         }
     }
 }
