@@ -11,12 +11,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 source "$ROOT/scripts/_env.sh"
 
-echo "▸ [1/4] Logic self-test"
+echo "▸ [1/5] Logic self-test"
 if ! swift run -c release MyIDESelfTest; then
   echo "✗ self-test failed"; exit 1
 fi
 
-echo "▸ [2/4] Build app bundle"
+echo "▸ [2/5] Build app bundle"
 "$ROOT/scripts/build.sh"
 APP="$ROOT/build/MyIDE.app"
 
@@ -50,10 +50,13 @@ if command -v git >/dev/null 2>&1; then
   printf 'export const draft = true;\n' > "$FIX/src/draft.ts"
 fi
 
-echo "▸ [3/4] Comments pane harness"
+echo "▸ [3/5] Comments pane harness"
 "$APP/Contents/MacOS/MyIDE" --comments-pane-self-test
 
-echo "▸ [4/4] Launch on fixture: $FIX"
+echo "▸ [4/5] Project tabs harness"
+"$APP/Contents/MacOS/MyIDE" --project-tabs-self-test
+
+echo "▸ [5/5] Launch on fixture: $FIX"
 open -n "$APP" --args "$FIX"
 
 APP_PID=""

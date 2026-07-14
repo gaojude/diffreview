@@ -25,9 +25,17 @@ struct MyIDEApp: App {
             Foundation.exit(0)
         }
 
-        let initialRootURL = Self.rootURLArgument()
-        let session = AppSession(initialRootURL: initialRootURL)
+        if CommandLine.arguments.contains("--project-tabs-self-test") {
+            Self.runProjectTabsSelfTest()
+            Foundation.exit(0)
+        }
+
+        let initialRootURLs = Self.rootURLArguments()
+        let session = AppSession(initialRootURLs: initialRootURLs)
         _session = StateObject(wrappedValue: session)
+        // Registered synchronously so folders arriving as open-events (the `diffreview` shim
+        // targets the running instance) always find the session, even before the window exists.
+        ProjectWindowController.shared.register(session: session)
         DispatchQueue.main.async {
             ProjectWindowController.shared.openProjectWindowIfNeeded(session: session)
         }
@@ -39,10 +47,32 @@ struct MyIDEApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
+                // Attaches as a new tab (the first open is just a one-tab attach).
                 Button("Open Project Folder…") {
                     ProjectWindowController.shared.chooseProjectFolder(session: session)
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Divider()
+
+                Button("Show Next Project") {
+                    session.activateAdjacentProject(forward: true)
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(session.projects.count < 2)
+
+                Button("Show Previous Project") {
+                    session.activateAdjacentProject(forward: false)
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(session.projects.count < 2)
+
+                Button("Close Project") {
+                    if let id = session.roster.activeID {
+                        session.closeProject(id: id)
+                    }
+                }
+                .disabled(session.activeProject == nil)
             }
 
             CommandGroup(after: .appInfo) {
@@ -58,15 +88,15 @@ struct MyIDEApp: App {
 
             // Menu-based shortcuts fire regardless of which view has focus.
             CommandMenu("View") {
-                Button("Increase Font Size") { session.project?.increaseFontSize() }
+                Button("Increase Font Size") { session.activeProject?.increaseFontSize() }
                     .keyboardShortcut("+", modifiers: .command)
-                    .disabled(session.project == nil)
-                Button("Decrease Font Size") { session.project?.decreaseFontSize() }
+                    .disabled(session.activeProject == nil)
+                Button("Decrease Font Size") { session.activeProject?.decreaseFontSize() }
                     .keyboardShortcut("-", modifiers: .command)
-                    .disabled(session.project == nil)
-                Button("Actual Size") { session.project?.resetFontSize() }
+                    .disabled(session.activeProject == nil)
+                Button("Actual Size") { session.activeProject?.resetFontSize() }
                     .keyboardShortcut("0", modifiers: .command)
-                    .disabled(session.project == nil)
+                    .disabled(session.activeProject == nil)
             }
         }
     }
@@ -144,6 +174,80 @@ struct MyIDEApp: App {
         }
     }
 
+    /// Headless harness for the multi-project window: drives the real `AppSession` through
+    /// attach → re-attach → switch → close against temp directories, and lays out the tab
+    /// strip in an `NSHostingView` — no window, no Accessibility permission. Run via
+    /// `MyIDE --project-tabs-self-test`; exits non-zero on failure.
+    @MainActor
+    private static func runProjectTabsSelfTest() {
+        func fail(_ message: String, code: Int32) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            Foundation.exit(code)
+        }
+
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myide-project-tabs-\(ProcessInfo.processInfo.processIdentifier)")
+        let dirA = base.appendingPathComponent("alpha", isDirectory: true)
+        let dirB = base.appendingPathComponent("beta", isDirectory: true)
+        let fileC = base.appendingPathComponent("not-a-directory.txt", isDirectory: false)
+        do {
+            try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: fileC)
+        } catch {
+            fail("project tabs: fixture setup failed: \(error)", code: 2)
+        }
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let session = AppSession(initialRootURLs: [dirA])
+        guard session.projects.count == 1, session.activeProject?.rootURL.path == dirA.resolvingSymlinksInPath().path else {
+            fail("project tabs: initial attach failed", code: 3)
+        }
+
+        session.attachProject(dirB)
+        guard session.projects.count == 2, session.activeProject?.displayName == "beta" else {
+            fail("project tabs: second attach did not add and activate", code: 4)
+        }
+
+        session.attachProject(dirA) // re-attach switches, never duplicates
+        guard session.projects.count == 2, session.activeProject?.displayName == "alpha" else {
+            fail("project tabs: re-attach duplicated or failed to activate", code: 5)
+        }
+
+        // The open-event path must drop non-directories and attach the rest.
+        ProjectWindowController.shared.register(session: session)
+        ProjectWindowController.shared.attachProjects(from: [fileC])
+        guard session.projects.count == 2 else {
+            fail("project tabs: open-event attached a non-directory", code: 6)
+        }
+
+        session.activateAdjacentProject(forward: true)
+        guard session.activeProject?.displayName == "beta" else {
+            fail("project tabs: next-project switch failed", code: 7)
+        }
+
+        let host = NSHostingView(rootView: ProjectTabStrip(session: session, attachProject: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 800, height: 40)
+        host.layoutSubtreeIfNeeded()
+        guard host.fittingSize.height > 0 else {
+            fail("project tabs: strip has no visible layout", code: 8)
+        }
+
+        guard let activeID = session.roster.activeID else {
+            fail("project tabs: no active project to close", code: 9)
+        }
+        session.closeProject(id: activeID)
+        guard session.projects.count == 1, session.activeProject?.displayName == "alpha" else {
+            fail("project tabs: closing the active project did not reveal its neighbor", code: 10)
+        }
+        session.closeProject(id: session.roster.activeID ?? "")
+        guard session.projects.isEmpty, session.activeProject == nil else {
+            fail("project tabs: closing the last project did not empty the window", code: 11)
+        }
+
+        print("project tabs ok strip=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
+    }
+
     /// Headless harness for the review-comments flow: drives the real controller through
     /// draft → commit → copy and lays out the pane, without needing a window or Accessibility
     /// permission. Run via `MyIDE --comments-pane-self-test`; exits non-zero on failure.
@@ -208,11 +312,13 @@ struct MyIDEApp: App {
         print("comments pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
     }
 
-    private static func rootURLArgument() -> URL? {
-        // The `diffreview` shim passes an absolute directory as argv[1]. A Finder launch has no
-        // project argument and deliberately falls through to the welcome screen.
+    private static func rootURLArguments() -> [URL] {
+        // Direct binary launches (dev, e2e) pass absolute directories as argv; each becomes
+        // an attached project. The packaged `diffreview` shim sends folders as open-events
+        // instead (see AppDelegate), so a running instance gains tabs rather than a second
+        // window. A Finder launch has neither and falls through to the welcome screen.
         let cwd = FileManager.default.currentDirectoryPath
-        return FileSystem.resolveRootDirectoryArgument(
+        return FileSystem.resolveRootDirectoryArguments(
             arguments: CommandLine.arguments,
             currentDirectory: cwd
         )
@@ -230,6 +336,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         ProjectWindowController.shared.revealProjectWindow(retries: 2)
+    }
+
+    /// Folders sent by LaunchServices — the `diffreview` shim (`open -a … dir…`), a drop on
+    /// the Dock icon, or Finder's Open With. Each attaches to the existing window as a tab;
+    /// this is what makes a second `diffreview` invocation join the running review instead
+    /// of spawning another window.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        ProjectWindowController.shared.attachProjects(from: urls)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -263,6 +377,37 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
     ]
 
     private var projectWindow: NSWindow?
+    /// The session open-events attach into. Weakly held: the SwiftUI `App` owns it.
+    private weak var session: AppSession?
+
+    func register(session: AppSession) {
+        self.session = session
+    }
+
+    /// Attaches folders arriving as open-events (CLI shim, Dock drop). Non-directories are
+    /// ignored — the window only ever holds project roots.
+    func attachProjects(from urls: [URL]) {
+        guard let session else { return }
+        let directories = urls.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+        guard !directories.isEmpty else { return }
+        session.attachProjects(directories)
+        NSLog(
+            "MyIDE lifecycle: open-event attached %d folder(s), window now holds %d project(s)",
+            directories.count,
+            session.projects.count
+        )
+        updateRepresentedProject(session.activeProject?.rootURL)
+        revealProjectWindow(retries: 2)
+    }
+
+    /// Points the window's proxy icon at the project currently showing.
+    func updateRepresentedProject(_ rootURL: URL?) {
+        projectWindow?.representedURL = rootURL
+    }
 
     func openProjectWindowIfNeeded(session: AppSession) {
         guard projectWindow == nil else {
@@ -283,7 +428,7 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "DiffReview"
-        window.representedURL = session.project?.rootURL
+        window.representedURL = session.activeProject?.rootURL
         window.minSize = NSSize(width: 1_060, height: 520)
         window.toolbarStyle = .unified
         let hosting = NSHostingController(rootView: content)
@@ -302,18 +447,18 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
     func chooseProjectFolder(session: AppSession) {
         let panel = NSOpenPanel()
         panel.title = "Open Project Folder"
-        panel.message = "Choose a Git project to review in DiffReview."
+        panel.message = "Choose Git projects to review in DiffReview. Each attaches as a tab."
         panel.prompt = "Open Project"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canCreateDirectories = true
-        panel.directoryURL = session.project?.rootURL
+        panel.directoryURL = session.activeProject?.rootURL
 
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak session] response in
-            guard response == .OK, let rootURL = panel.url, let session else { return }
-            session.openProject(rootURL)
-            self?.projectWindow?.representedURL = rootURL
+            guard response == .OK, !panel.urls.isEmpty, let session else { return }
+            session.attachProjects(panel.urls)
+            self?.projectWindow?.representedURL = session.activeProject?.rootURL
             self?.projectWindow?.title = "DiffReview"
             self?.revealProjectWindow(retries: 2)
         }

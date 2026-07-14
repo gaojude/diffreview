@@ -136,6 +136,17 @@ public enum FileSystem {
         return resolveDirectory(pathArg, relativeTo: currentDirectory)
     }
 
+    /// Resolves *every* directory supplied on the command line, in argv order, so a launch
+    /// like `MyIDE dir1 dir2` attaches each as a project. Flags and paths that are not
+    /// existing directories are skipped (the `diffreview` shim validates paths before the app
+    /// sees them; a best-effort launch beats refusing everything over one bad path). Empty
+    /// when no path was supplied — the GUI-launch onboarding case.
+    public static func resolveRootDirectoryArguments(arguments: [String], currentDirectory: String) -> [URL] {
+        arguments.dropFirst()
+            .filter { !$0.hasPrefix("-") }
+            .compactMap { resolveDirectory($0, relativeTo: currentDirectory) }
+    }
+
     /// Resolves the directory to open from process arguments.
     /// - Parameters:
     ///   - arguments: full `CommandLine.arguments` (argv[0] is the program path).
