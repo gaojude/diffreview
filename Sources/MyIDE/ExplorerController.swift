@@ -207,6 +207,11 @@ final class ExplorerPanelController: NSObject, NSWindowDelegate {
 @MainActor
 final class DefinitionController: ObservableObject {
     private var server: TSServer?
+    private var consecutiveTimeouts = 0
+    /// A crashed tsserver already respawns via `.notRunning`; a WEDGED one (alive but never
+    /// answering) used to degrade every lookup to a 12s timeout until app restart. After
+    /// this many timeouts in a row, the instance is presumed wedged and replaced.
+    private static let timeoutsBeforeRespawn = 2
 
     func definition(rootURL: URL, fileURL: URL, line: Int, column: Int) async -> Result<[TSFileSpan], TSServerError> {
         guard let server = await ensureServer(rootURL: rootURL) else {
@@ -218,9 +223,7 @@ final class DefinitionController: ObservableObject {
         let result = await Task.detached(priority: .userInitiated) {
             server.definition(file: path, line: line, offset: column)
         }.value
-        if case .failure(.notRunning) = result {
-            self.server = nil // respawn on next attempt
-        }
+        noteOutcome(of: result.map { _ in () })
         return result
     }
 
@@ -239,10 +242,28 @@ final class DefinitionController: ObservableObject {
         let result = await Task.detached(priority: .userInitiated) {
             server.references(file: path, line: line, offset: column)
         }.value
-        if case .failure(.notRunning) = result {
-            self.server = nil
-        }
+        noteOutcome(of: result.map { _ in () })
         return result
+    }
+
+    /// Shared crash/wedge bookkeeping for both lookup kinds.
+    private func noteOutcome(of result: Result<Void, TSServerError>) {
+        switch result {
+        case .success:
+            consecutiveTimeouts = 0
+        case .failure(.notRunning):
+            consecutiveTimeouts = 0
+            server = nil // crashed: respawn on next attempt
+        case .failure(.timedOut):
+            consecutiveTimeouts += 1
+            if consecutiveTimeouts >= Self.timeoutsBeforeRespawn {
+                consecutiveTimeouts = 0
+                server?.shutdown() // unblocks any writer stuck on the full stdin pipe
+                server = nil
+            }
+        case .failure:
+            consecutiveTimeouts = 0
+        }
     }
 
     func shutdown() {

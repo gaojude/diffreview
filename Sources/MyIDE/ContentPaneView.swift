@@ -118,7 +118,11 @@ struct ContentPaneView: View {
             }
         }
         .onChange(of: comments.selectedCommentID) { _, id in
-            if id == nil {
+            // Deselecting clears the yellow emphasis — unless a draft is opening: beginDraft
+            // nils the selection first and beginComment then focuses the drafted rows, and
+            // this handler runs AFTER both, so without the guard it would erase the very
+            // emphasis the draft just placed.
+            if id == nil, comments.draft == nil {
                 focusedDocumentRange = nil
             }
         }

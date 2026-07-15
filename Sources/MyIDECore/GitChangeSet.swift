@@ -539,16 +539,30 @@ public enum GitChangeSet {
         }
     }
 
+    /// A local git command answers in milliseconds; anything past this is a wedged child
+    /// (stuck credential prompt, dead network mount, hung fsmonitor hook) that must not pin
+    /// its loader forever. Generous enough for giant repos on cold disk caches.
+    static let gitTimeout: TimeInterval = 30
+
     /// Internal so sibling extensions (e.g. the document loader) can run git too.
+    /// Returns nil when the command can't launch or exceeds `gitTimeout` (the child is
+    /// terminated) — every caller already treats nil as "git unavailable".
     static func runGit(_ arguments: [String], in directory: URL) -> GitCommandResult? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["git", "-C", directory.path] + arguments
+        // Never sit on an interactive credential prompt; fail fast instead.
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        process.environment = environment
 
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
 
         do {
             try process.run()
@@ -558,17 +572,33 @@ public enum GitChangeSet {
 
         // Drain both pipes *before* waiting: a child writing more than the pipe buffer
         // (~64 KB) blocks until someone reads, so waitUntilExit-first deadlocks on big diffs.
-        // stderr is drained on a background queue so stdout and stderr can't starve each other.
+        // Both drains run on background queues so a wedged child can't block this thread —
+        // the timeout below is the only wait, and it is bounded.
+        var stdoutData = Data()
         var stderrData = Data()
+        let stdoutDrained = DispatchSemaphore(value: 0)
         let stderrDrained = DispatchSemaphore(value: 0)
+        let stdoutHandle = stdout.fileHandleForReading
         let stderrHandle = stderr.fileHandleForReading
+        DispatchQueue.global(qos: .utility).async {
+            stdoutData = stdoutHandle.readDataToEndOfFile()
+            stdoutDrained.signal()
+        }
         DispatchQueue.global(qos: .utility).async {
             stderrData = stderrHandle.readDataToEndOfFile()
             stderrDrained.signal()
         }
-        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-        stderrDrained.wait()
-        process.waitUntilExit()
+
+        if exited.wait(timeout: .now() + Self.gitTimeout) == .timedOut {
+            process.terminate()
+            return nil
+        }
+        // The child exited, so EOF is imminent; bounded waits keep a stray inherited pipe
+        // descriptor (e.g. from a hook's grandchild) from parking this thread forever.
+        guard stdoutDrained.wait(timeout: .now() + 5) == .success,
+              stderrDrained.wait(timeout: .now() + 5) == .success else {
+            return nil
+        }
 
         return GitCommandResult(
             exitCode: process.terminationStatus,
