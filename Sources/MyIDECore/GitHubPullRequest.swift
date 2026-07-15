@@ -70,7 +70,10 @@ public enum GitHubPullRequestLocator {
             process.terminate()
             return nil
         }
-        stdoutDrained.wait()
+        // gh exited, so EOF is imminent — unless a grandchild (credential helper, browser
+        // opener) inherited the write end, in which case an unbounded wait would park this
+        // thread forever. Bounded: give up on the PR button rather than leak the task.
+        guard stdoutDrained.wait(timeout: .now() + 5) == .success else { return nil }
 
         guard process.terminationStatus == 0 else { return nil }
         return parse(stdoutData)

@@ -47,6 +47,10 @@ public enum MovedBlockDetector {
     /// Lines whose text recurs more often than this among removals are too generic to anchor
     /// a match (and would make the scan quadratic on pathological diffs).
     static let maximumAnchorOccurrences = 64
+    /// Longest run a single candidate is extended: bounds worst-case work per anchor at
+    /// occurrences × this, so a pathological generated diff degrades to a truncated link
+    /// instead of minutes of CPU. Real moved blocks are far smaller.
+    static let maximumBlockLines = 512
 
     /// One removed or added patch line, positioned by real file line number. `cluster`
     /// identifies the contiguous `-`/`+` block the line came from: a deletion and an addition
@@ -169,9 +173,13 @@ public enum MovedBlockDetector {
 
         var start = 0
         while start < added.count {
+            if Task.isCancelled { return blocks } // partial result; the stale load discards it
             let anchor = added[start]
             guard !addedClaimed[start],
-                  !anchor.normalized.isEmpty, // blank lines can extend a run but not anchor one
+                  // Blank lines can extend a run but not anchor one; punctuation-only lines
+                  // ("}", ");") are too generic to anchor and, unbounded, they are the fuel
+                  // for pathological re-extension on generated diffs.
+                  anchor.alphanumerics > 0,
                   let candidates = occurrences[anchor.normalized],
                   candidates.count <= maximumAnchorOccurrences else {
                 start += 1
@@ -183,7 +191,8 @@ public enum MovedBlockDetector {
                 // Same cluster = the paired halves of one in-place edit, not a move.
                 guard !removedClaimed[candidate], removed[candidate].cluster != anchor.cluster else { continue }
                 var length = 1
-                while start + length < added.count, candidate + length < removed.count {
+                while start + length < added.count, candidate + length < removed.count,
+                      length < maximumBlockLines {
                     let nextAdded = added[start + length]
                     let nextRemoved = removed[candidate + length]
                     guard !addedClaimed[start + length], !removedClaimed[candidate + length],

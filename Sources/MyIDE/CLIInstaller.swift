@@ -110,11 +110,21 @@ final class CLIInstaller: ObservableObject {
             let errorPipe = Pipe()
             process.standardError = errorPipe
             try process.run()
+            // Drain stderr concurrently BEFORE waiting: reading only after exit deadlocks
+            // if the child fills the ~64 KB pipe buffer (same rule as GitChangeSet.runGit).
+            // The wait itself is intentionally unbounded — it spans the admin auth dialog.
+            var errorData = Data()
+            let errorDrained = DispatchSemaphore(value: 0)
+            let errorHandle = errorPipe.fileHandleForReading
+            DispatchQueue.global(qos: .utility).async {
+                errorData = errorHandle.readDataToEndOfFile()
+                errorDrained.signal()
+            }
             process.waitUntilExit()
+            errorDrained.wait()
 
             guard process.terminationStatus == 0 else {
-                let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
-                let detail = String(data: data, encoding: .utf8)?
+                let detail = String(data: errorData, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw CLIInstallError.installFailed(
                     detail?.isEmpty == false ? detail! : "Administrator authorization was cancelled."
