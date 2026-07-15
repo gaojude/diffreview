@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="DiffReview"
 BUNDLE_ID="com.judegao.diffreview"
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
