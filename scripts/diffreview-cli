@@ -16,6 +16,19 @@ done
 SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
 APP="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# `diffreview respond <comment-id> <reply text…>` — deliver an agent's reply to a review
+# comment. Runs the app binary headless (no window); a running DiffReview picks the reply
+# up through a distributed notification.
+if [ "${1:-}" = "respond" ]; then
+  shift
+  if [ $# -lt 2 ]; then
+    echo "usage: diffreview respond <comment-id> <reply text>" >&2
+    exit 2
+  fi
+  ID="$1"; shift
+  exec "$SCRIPT_DIR/DiffReview" --respond "$ID" "$@"
+fi
+
 # Every argument is a project directory; no arguments means the current one. Validate and
 # absolutize each, rotating the resolved paths back into "$@" (POSIX sh has no arrays).
 [ $# -gt 0 ] || set -- .

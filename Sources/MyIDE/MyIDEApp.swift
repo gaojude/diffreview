@@ -15,6 +15,10 @@ struct MyIDEApp: App {
             Foundation.exit(0)
         }
 
+        if CommandLine.arguments.contains("--respond") {
+            Self.runRespond()
+        }
+
         if CommandLine.arguments.contains("--pr-probe") {
             Self.runPullRequestProbe()
             Foundation.exit(0)
@@ -124,6 +128,48 @@ struct MyIDEApp: App {
             return "Retry diffreview Command Line Tool Installation…"
         }
         return "Install diffreview Command Line Tool…"
+    }
+
+    /// Headless reply delivery for `diffreview respond <id> <text>`: looks the comment up by
+    /// id prefix across every persisted review, appends the reply, and pings any running
+    /// DiffReview through a distributed notification so the open panel refreshes. This is
+    /// how a coding agent answers a review comment from the terminal.
+    @MainActor
+    private static func runRespond() -> Never {
+        guard let flagIndex = CommandLine.arguments.firstIndex(of: "--respond"),
+              flagIndex + 2 < CommandLine.arguments.count else {
+            FileHandle.standardError.write(Data("usage: MyIDE --respond <comment-id> <reply text>\n".utf8))
+            Foundation.exit(2)
+        }
+        let idPrefix = CommandLine.arguments[flagIndex + 1]
+        // Everything after the id is the reply — quoting is a courtesy, not a requirement.
+        let body = CommandLine.arguments[(flagIndex + 2)...].joined(separator: " ")
+
+        switch ReviewCommentReplyService.applyReply(idPrefix: idPrefix, body: body) {
+        case .applied(let comment, _):
+            DistributedNotificationCenter.default().postNotificationName(
+                .reviewCommentsChangedExternally,
+                object: nil,
+                userInfo: nil,
+                deliverImmediately: true
+            )
+            print("replied to [\(comment.shortID)] \(comment.filePath) (\(comment.lineLabel))")
+            Foundation.exit(0)
+        case .notFound:
+            FileHandle.standardError.write(Data(
+                "diffreview: no comment matches id \(idPrefix). Ids appear in brackets in the copied review block.\n".utf8))
+            Foundation.exit(1)
+        case .ambiguous(let ids):
+            FileHandle.standardError.write(Data(
+                "diffreview: id \(idPrefix) is ambiguous — matches \(ids.joined(separator: ", ")). Use more characters.\n".utf8))
+            Foundation.exit(1)
+        case .emptyReply:
+            FileHandle.standardError.write(Data("diffreview: reply text is empty\n".utf8))
+            Foundation.exit(2)
+        case .writeFailed(let detail):
+            FileHandle.standardError.write(Data("diffreview: could not save the reply: \(detail)\n".utf8))
+            Foundation.exit(1)
+        }
     }
 
     /// Headless probe for branch→PR detection: prints what the toolbar PR button would show
@@ -475,6 +521,37 @@ struct MyIDEApp: App {
             fail("comments pane: precise draft lost its columns on commit", code: 8)
         }
         controller.delete(preciseComment.id)
+
+        // Agent replies: a persisted reply must survive the store→controller reload the
+        // distributed notification triggers, and the card must lay out with the reply row.
+        let replyBase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myide-comments-pane-replies-\(ProcessInfo.processInfo.processIdentifier)")
+        defer { try? FileManager.default.removeItem(at: replyBase) }
+        let replyStore = ReviewCommentStore(
+            rootURL: URL(fileURLWithPath: "/repo"),
+            branchName: "feature",
+            storageRoot: replyBase
+        )
+        replyStore.save([ReviewComment(
+            filePath: "src/main.ts",
+            origin: .diff,
+            startLine: 2,
+            endLine: 2,
+            codeText: "+greet",
+            body: "Is this rename safe?",
+            replies: [ReviewCommentReply(body: "Yes — no other call sites; verified with grep.")]
+        )])
+        controller.configurePersistence(store: replyStore)
+        controller.reloadFromStore()
+        guard controller.comments.first?.replies.count == 1 else {
+            fail("comments pane: persisted reply did not survive reload", code: 9)
+        }
+        let repliedHost = NSHostingView(rootView: CommentsPaneView(controller: controller, fontSize: FontSizes.default))
+        repliedHost.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
+        repliedHost.layoutSubtreeIfNeeded()
+        guard repliedHost.fittingSize.width > 0, repliedHost.fittingSize.height > 0 else {
+            fail("comments pane: reply row broke the card layout", code: 10)
+        }
 
         print("comments pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
     }

@@ -32,6 +32,28 @@ final class ReviewCommentsController: ObservableObject {
 
     private var store: ReviewCommentStore?
     private var copyFeedbackTask: Task<Void, Never>?
+    private var externalChangeObserver: (any NSObjectProtocol)?
+
+    init() {
+        // `diffreview respond` runs in a separate process and edits the persisted review
+        // directly; it announces the write through a distributed notification so an open
+        // panel shows the reply without a relaunch.
+        externalChangeObserver = DistributedNotificationCenter.default().addObserver(
+            forName: .reviewCommentsChangedExternally,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.reloadFromStore()
+            }
+        }
+    }
+
+    deinit {
+        if let externalChangeObserver {
+            DistributedNotificationCenter.default().removeObserver(externalChangeObserver)
+        }
+    }
 
     func configurePersistence(store: ReviewCommentStore) {
         guard self.store?.id != store.id else { return }
@@ -40,6 +62,19 @@ final class ReviewCommentsController: ObservableObject {
         draft = nil
         draftText = ""
         selectedCommentID = nil
+    }
+
+    /// Re-reads the persisted review after an external process changed it. Disk is the
+    /// source of truth (every in-app mutation persists immediately), so replacing the
+    /// in-memory list is safe; the selection survives when its comment still exists.
+    func reloadFromStore() {
+        guard let store else { return }
+        let reloaded = store.load()
+        guard reloaded != comments else { return }
+        comments = reloaded
+        if let selected = selectedCommentID, !reloaded.contains(where: { $0.id == selected }) {
+            selectedCommentID = nil
+        }
     }
 
     // MARK: - Draft lifecycle
