@@ -70,12 +70,25 @@ public struct TSServerMessageBuffer: Sendable {
 
     public init() {}
 
+    /// A frame body larger than this is a corrupt/desynced length header, not a real
+    /// response — accepting it would make the buffer grow without bound waiting for bytes
+    /// that never come.
+    public static let maximumBodyBytes = 64 * 1024 * 1024
+
     public mutating func append(_ chunk: Data) -> [Data] {
         data.append(chunk)
         var bodies: [Data] = []
 
         while true {
-            guard let markerRange = data.firstRange(of: Self.headerMarker) else { break }
+            guard let markerRange = data.firstRange(of: Self.headerMarker) else {
+                // Garbage with no header in sight: keep only a potential partial marker at
+                // the tail so a split "Content-Length: " still resynchronizes, drop the rest
+                // (otherwise a desynced stream accumulates memory forever).
+                if data.count > Self.headerMarker.count {
+                    data.removeSubrange(data.startIndex..<data.index(data.endIndex, offsetBy: -Self.headerMarker.count))
+                }
+                break
+            }
             guard let terminatorRange = data.firstRange(
                 of: Self.headerTerminator,
                 in: markerRange.upperBound..<data.endIndex
@@ -85,8 +98,8 @@ public struct TSServerMessageBuffer: Sendable {
 
             let lengthBytes = data.subdata(in: markerRange.upperBound..<terminatorRange.lowerBound)
             guard let length = Int(String(decoding: lengthBytes, as: UTF8.self)
-                .trimmingCharacters(in: .whitespaces)), length >= 0 else {
-                // Corrupt header — drop through it so the stream can resynchronize.
+                .trimmingCharacters(in: .whitespaces)), length >= 0, length <= Self.maximumBodyBytes else {
+                // Corrupt or absurd header — drop through it so the stream can resynchronize.
                 data.removeSubrange(data.startIndex..<terminatorRange.upperBound)
                 continue
             }
@@ -127,6 +140,12 @@ public final class TSServer {
     private let process = Process()
     private let stdinHandle: FileHandle
     private let condition = NSCondition()
+    /// Serializes stdin writes SEPARATELY from `condition`: a wedged tsserver that stops
+    /// reading stdin blocks the writer on the full pipe, and if that writer held `condition`,
+    /// every other caller would block in `condition.lock()` before ever reaching its timeout.
+    /// With writes outside the response lock, waiters still time out and the wedged instance
+    /// can be replaced (terminating it fails the stuck write with EPIPE, freeing the thread).
+    private let writeLock = NSLock()
     private var messageBuffer = TSServerMessageBuffer()
     private var responsesBySeq: [Int: [String: Any]] = [:]
     private var nextSeq = 1
@@ -192,18 +211,16 @@ public final class TSServer {
         offset: Int,
         timeout: TimeInterval = 12
     ) -> Result<[TSFileSpan], TSServerError> {
-        condition.lock()
-        defer { condition.unlock() }
-        guard running else { return .failure(.notRunning) }
-
-        if !openFiles.contains(file) {
-            openFiles.insert(file)
-            send(command: "open", arguments: ["file": file], seq: takeSeq())
+        guard let seq = enqueueRequest(
+            command: "definition",
+            arguments: ["file": file, "line": line, "offset": offset],
+            file: file
+        ) else {
+            return .failure(.notRunning)
         }
 
-        let seq = takeSeq()
-        send(command: "definition", arguments: ["file": file, "line": line, "offset": offset], seq: seq)
-
+        condition.lock()
+        defer { condition.unlock() }
         let deadline = Date().addingTimeInterval(timeout)
         while responsesBySeq[seq] == nil, running {
             if !condition.wait(until: deadline) {
@@ -247,18 +264,16 @@ public final class TSServer {
         offset: Int,
         timeout: TimeInterval = 12
     ) -> Result<(symbolName: String?, references: [TSReference]), TSServerError> {
-        condition.lock()
-        defer { condition.unlock() }
-        guard running else { return .failure(.notRunning) }
-
-        if !openFiles.contains(file) {
-            openFiles.insert(file)
-            send(command: "open", arguments: ["file": file], seq: takeSeq())
+        guard let seq = enqueueRequest(
+            command: "references",
+            arguments: ["file": file, "line": line, "offset": offset],
+            file: file
+        ) else {
+            return .failure(.notRunning)
         }
 
-        let seq = takeSeq()
-        send(command: "references", arguments: ["file": file, "line": line, "offset": offset], seq: seq)
-
+        condition.lock()
+        defer { condition.unlock() }
         let deadline = Date().addingTimeInterval(timeout)
         while responsesBySeq[seq] == nil, running {
             if !condition.wait(until: deadline) {
@@ -293,6 +308,32 @@ public final class TSServer {
             )
         }
         return .success((symbolName, references))
+    }
+
+    /// Reserves sequence numbers under `condition` (shared state), then performs the
+    /// blocking stdin writes under `writeLock` only — never while holding `condition`.
+    /// Returns the request's seq, or nil when the server isn't running.
+    private func enqueueRequest(command: String, arguments: [String: Any], file: String) -> Int? {
+        condition.lock()
+        guard running else {
+            condition.unlock()
+            return nil
+        }
+        var openSeq: Int?
+        if !openFiles.contains(file) {
+            openFiles.insert(file)
+            openSeq = takeSeq()
+        }
+        let seq = takeSeq()
+        condition.unlock()
+
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        if let openSeq {
+            send(command: "open", arguments: ["file": file], seq: openSeq)
+        }
+        send(command: command, arguments: arguments, seq: seq)
+        return seq
     }
 
     private func takeSeq() -> Int {

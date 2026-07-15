@@ -164,28 +164,47 @@ public extension GitChangeSet {
 
     /// The per-file bodies backing the combined document. Callers keep these around so
     /// collapse toggles can rebuild the document without rerunning every `git diff`.
+    ///
+    /// Runs 2–3 git commands per file, so a big branch is a long sequential process storm.
+    /// The loop checks `Task.isCancelled` between files: when the user switches scope or
+    /// closes the project mid-load, the stale load stops spawning instead of racing the
+    /// fresh one to completion (its partial result is discarded by the caller's own
+    /// cancellation check).
     static func loadDocumentEntries(for context: GitChangeContext) -> [ChangeSetDocument.Entry] {
         var remainingBudget = ChangeSetDocument.maxDocumentSize
         let diffBase = resolvedDiffBase(in: context)
-        return context.files.map { file -> ChangeSetDocument.Entry in
-            let (body, isPlaceholder) = entryBody(for: file, in: context, diffBase: diffBase, remainingBudget: remainingBudget)
-            if !isPlaceholder {
-                remainingBudget -= body.utf8.count
-            }
-            var oldText: String?
-            var newText: String?
-            if !isPlaceholder {
-                oldText = baseFileText(for: file, diffBase: diffBase, in: context)
-                newText = newFileText(for: file, in: context)
-            }
-            return ChangeSetDocument.Entry(
-                file: file,
-                body: body,
-                isPlaceholder: isPlaceholder,
-                oldText: oldText,
-                newText: newText
-            )
+        var entries: [ChangeSetDocument.Entry] = []
+        entries.reserveCapacity(context.files.count)
+        for file in context.files {
+            if Task.isCancelled { return entries }
+            entries.append(entry(for: file, in: context, diffBase: diffBase, remainingBudget: &remainingBudget))
         }
+        return entries
+    }
+
+    private static func entry(
+        for file: GitChangedFile,
+        in context: GitChangeContext,
+        diffBase: String?,
+        remainingBudget: inout Int
+    ) -> ChangeSetDocument.Entry {
+        let (body, isPlaceholder) = entryBody(for: file, in: context, diffBase: diffBase, remainingBudget: remainingBudget)
+        if !isPlaceholder {
+            remainingBudget -= body.utf8.count
+        }
+        var oldText: String?
+        var newText: String?
+        if !isPlaceholder {
+            oldText = baseFileText(for: file, diffBase: diffBase, in: context)
+            newText = newFileText(for: file, in: context)
+        }
+        return ChangeSetDocument.Entry(
+            file: file,
+            body: body,
+            isPlaceholder: isPlaceholder,
+            oldText: oldText,
+            newText: newText
+        )
     }
 
     /// Base-version content via `git show <ref>:<path>`; nil for untracked files or oversized

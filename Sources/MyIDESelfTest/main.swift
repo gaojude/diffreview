@@ -494,6 +494,45 @@ do {
     check(collapsed.highlightSpans.isEmpty, "collapsed sections are not highlighted")
 }
 
+// MARK: - RecentProjects (welcome screen recents)
+
+section("RecentProjects")
+do {
+    let epoch = Date(timeIntervalSince1970: 1_000)
+    var list = RecentProjects.adding("/repo/a", at: epoch, to: [])
+    list = RecentProjects.adding("/repo/b", at: epoch.addingTimeInterval(1), to: list)
+    check(list.map(\.path) == ["/repo/b", "/repo/a"], "most recent first")
+
+    list = RecentProjects.adding("/repo/a", at: epoch.addingTimeInterval(2), to: list)
+    check(list.map(\.path) == ["/repo/a", "/repo/b"], "re-opening moves to front without duplicating")
+    check(list.first?.lastOpenedAt == epoch.addingTimeInterval(2), "re-opening freshens the timestamp")
+
+    var flood = [RecentProject]()
+    for index in 0...(RecentProjects.limit + 3) {
+        flood = RecentProjects.adding("/repo/\(index)", at: epoch, to: flood)
+    }
+    check(flood.count == RecentProjects.limit, "list caps at the limit")
+    check(flood.first?.path == "/repo/\(RecentProjects.limit + 3)", "cap drops the oldest entries")
+
+    check(RecentProject(path: "/x/marker-worktree", lastOpenedAt: epoch).displayName == "marker-worktree",
+          "display name is the folder name")
+
+    // Store round-trip + pruning of vanished directories.
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory.appendingPathComponent("myide-recents-\(UUID().uuidString)")
+    try! fm.createDirectory(at: tmp.appendingPathComponent("alive"), withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: tmp) }
+
+    let store = RecentProjectsStore(storageRoot: tmp)
+    check(store.load().isEmpty, "missing store loads empty")
+    store.save([
+        RecentProject(path: tmp.appendingPathComponent("alive").path, lastOpenedAt: epoch),
+        RecentProject(path: tmp.appendingPathComponent("deleted-worktree").path, lastOpenedAt: epoch),
+    ])
+    check(store.load().map(\.displayName) == ["alive"], "load prunes directories that no longer exist")
+    check(store.load(directoryExists: { _ in true }).count == 2, "prune is by existence, not by count")
+}
+
 // MARK: - MovedBlockDetector (moved code across the change set)
 
 section("MovedBlockDetector")
