@@ -13,7 +13,14 @@ struct CodeSelectionContext: Codable, Equatable, Sendable {
     let contentKind: CodeContentKind
     let startLine: Int
     let endLine: Int
+    /// The selection expanded to whole lines — what line-level consumers read.
     let text: String
+    /// Character-level precision: 1-based columns of the first/last selected character
+    /// within `startLine`/`endLine`, and the selection verbatim. Nil when the selection
+    /// couldn't be resolved below line granularity.
+    var startColumn: Int?
+    var endColumn: Int?
+    var exactText: String?
 
     var lineLabel: String {
         startLine == endLine ? "Line \(startLine)" : "Lines \(startLine)-\(endLine)"
@@ -83,6 +90,15 @@ struct DiffSectionHeaderModel: Equatable, Identifiable {
             }
         }
     }
+}
+
+/// Rows carrying a review comment, with optional character precision: when columns are
+/// present the anchor band tints only the selected characters of the first/last row instead
+/// of the whole lines. Rows are 1-based document lines; columns are 1-based within their row.
+struct CommentedCodeRange: Equatable {
+    let rows: ClosedRange<Int>
+    var startColumn: Int?
+    var endColumn: Int?
 }
 
 /// One end of a detected moved block, resolved to document rows on a specific pane, with
@@ -161,8 +177,9 @@ struct CodeTextView: NSViewRepresentable {
     var fontSize: CGFloat = FontSizes.default
     var allowsCommenting = true
     var focusedLineRange: ClosedRange<Int>?
-    /// Lines that carry review comments; tinted so commented code is recognizable at a glance.
-    var commentedLineRanges: [ClosedRange<Int>] = []
+    /// Code that carries review comments; tinted so commented code is recognizable at a
+    /// glance — down to the exact selected characters when the comment is precise.
+    var commentedRanges: [CommentedCodeRange] = []
     /// Detected moved blocks on this pane: rows get a violet wash over the usual add/delete
     /// tint, and each block grows a clickable "moved to/from" chip that jumps to the other end.
     var moveLinks: [MoveLinkModel] = []
@@ -270,7 +287,7 @@ struct CodeTextView: NSViewRepresentable {
             contentKind: contentKind,
             fontSize: fontSize,
             focusedLineRange: focusedLineRange,
-            commentedLineRanges: commentedLineRanges,
+            commentedRanges: commentedRanges,
             movedLineRanges: moveLinks.map(\.rows),
             rowKinds: rowKinds,
             highlightSpans: highlightSpans,
@@ -293,7 +310,7 @@ struct CodeTextView: NSViewRepresentable {
             contentKind: contentKind,
             fontSize: fontSize,
             focusedLineRange: focusedLineRange,
-            commentedLineRanges: commentedLineRanges,
+            commentedRanges: commentedRanges,
             movedLineRanges: moveLinks.map(\.rows),
             rowKinds: rowKinds,
             highlightSpans: highlightSpans,
@@ -324,7 +341,7 @@ struct CodeTextView: NSViewRepresentable {
             onToggle: onSectionToggle,
             onOpen: onSectionOpen
         )
-        coordinator.configureCommentMarkers(commentedLineRanges, fontSize: fontSize, onTap: onCommentMarkerClick)
+        coordinator.configureCommentMarkers(commentedRanges.map(\.rows), fontSize: fontSize, onTap: onCommentMarkerClick)
         coordinator.configureMoveLinks(moveLinks, fontSize: fontSize, onTap: onMoveLinkClick)
         coordinator.onFindResults = onFindResults
         coordinator.updateCommentButton()
@@ -700,7 +717,7 @@ struct CodeTextView: NSViewRepresentable {
             contentKind: CodeContentKind,
             fontSize: CGFloat,
             focusedLineRange: ClosedRange<Int>?,
-            commentedLineRanges: [ClosedRange<Int>],
+            commentedRanges: [CommentedCodeRange],
             movedLineRanges: [ClosedRange<Int>],
             rowKinds: [SideBySideDocument.RowKind],
             highlightSpans: [CodeHighlightSpan],
@@ -716,7 +733,7 @@ struct CodeTextView: NSViewRepresentable {
                 contentKind: contentKind,
                 fontSize: fontSize,
                 focusedLineRange: focusedLineRange,
-                commentedLineRanges: commentedLineRanges,
+                commentedRanges: commentedRanges,
                 movedLineRanges: movedLineRanges,
                 rowKinds: rowKinds,
                 highlightSpans: highlightSpans,
@@ -833,7 +850,7 @@ struct CodeTextView: NSViewRepresentable {
                     base,
                     contentKind: contentKind,
                     focusedLineRange: focusedLineRange,
-                    commentedLineRanges: commentedLineRanges,
+                    commentedRanges: commentedRanges,
                     movedLineRanges: movedLineRanges,
                     rowKinds: rowKinds,
                     appearance: appearance,
@@ -1220,12 +1237,24 @@ struct CodeTextView: NSViewRepresentable {
                 .trimmingCharacters(in: .newlines)
             guard !text.isEmpty else { return nil }
 
+            // Character precision alongside the line expansion, so a comment can target the
+            // exact words that were selected, not just their lines.
+            let precise = SelectionGeometry.preciseSelection(
+                in: textView.string,
+                selectedLocation: selectedRange.location,
+                selectedLength: selectedRange.length,
+                lineStarts: lineStarts()
+            )
+
             return CodeSelectionContext(
                 fileURL: fileURL,
                 contentKind: contentKind,
                 startLine: lineNumber(at: lineRange.location),
                 endLine: lineNumber(at: max(NSMaxRange(lineRange) - 1, lineRange.location)),
-                text: text
+                text: text,
+                startColumn: precise?.startColumn,
+                endColumn: precise?.endColumn,
+                exactText: precise?.exactText
             )
         }
 
@@ -1260,7 +1289,7 @@ struct CodeTextView: NSViewRepresentable {
             _ attributedString: NSAttributedString,
             contentKind: CodeContentKind,
             focusedLineRange: ClosedRange<Int>?,
-            commentedLineRanges: [ClosedRange<Int>],
+            commentedRanges: [CommentedCodeRange],
             movedLineRanges: [ClosedRange<Int>],
             rowKinds: [SideBySideDocument.RowKind],
             appearance: NSAppearance,
@@ -1318,9 +1347,10 @@ struct CodeTextView: NSViewRepresentable {
             }
 
             // Commented code gets a solid teal band (plus the marker bar the container draws
-            // at the left edge); syntax colors stay readable underneath.
-            for range in commentedLineRanges {
-                if let characterRange = characterRange(forLineRange: range, table: lineTable, stringLength: nsString.length) {
+            // at the left edge); syntax colors stay readable underneath. Precise comments
+            // tint only the characters that were selected, not their whole lines.
+            for commented in commentedRanges {
+                if let characterRange = characterRange(forCommentedRange: commented, in: nsString, table: lineTable) {
                     result.addAttribute(
                         .backgroundColor,
                         value: NSColor.systemTeal.withAlphaComponent(isDark ? 0.26 : 0.17),
@@ -1340,6 +1370,46 @@ struct CodeTextView: NSViewRepresentable {
             }
 
             return result
+        }
+
+        /// The characters a commented range should tint. Whole lines for line comments; for
+        /// precise comments, trimmed to the stored columns — clamped to each line's real
+        /// content so a comment made against older text can never tint out of bounds. An
+        /// empty result after clamping falls back to the whole-line band (the anchor must
+        /// stay visible even when the code under it changed).
+        private static func characterRange(
+            forCommentedRange commented: CommentedCodeRange,
+            in string: NSString,
+            table: [NSRange]
+        ) -> NSRange? {
+            let lower = max(commented.rows.lowerBound, 1)
+            guard lower <= table.count else { return nil }
+            let upper = max(commented.rows.upperBound, lower)
+            let firstLineRange = table[lower - 1]
+            let lastLineRange = upper <= table.count ? table[upper - 1] : nil
+            let wholeLines = NSRange(
+                location: firstLineRange.location,
+                length: max((lastLineRange.map(NSMaxRange) ?? string.length) - firstLineRange.location, 0)
+            )
+            guard let startColumn = commented.startColumn,
+                  let endColumn = commented.endColumn,
+                  let lastLineRange else {
+                return wholeLines
+            }
+
+            func contentLength(of lineRange: NSRange) -> Int {
+                var length = lineRange.length
+                while length > 0 {
+                    let character = string.character(at: lineRange.location + length - 1)
+                    if character == 0x0A || character == 0x0D { length -= 1 } else { break }
+                }
+                return length
+            }
+
+            let start = firstLineRange.location + min(max(startColumn - 1, 0), contentLength(of: firstLineRange))
+            let end = lastLineRange.location + min(max(endColumn, 0), contentLength(of: lastLineRange))
+            guard end > start else { return wholeLines }
+            return NSRange(location: start, length: end - start)
         }
 
         /// Character range of every line, in order — computed once per styling pass so the
@@ -1483,7 +1553,7 @@ struct CodeTextView: NSViewRepresentable {
         let contentKind: CodeContentKind
         let fontSize: CGFloat
         let focusedLineRange: ClosedRange<Int>?
-        let commentedLineRanges: [ClosedRange<Int>]
+        let commentedRanges: [CommentedCodeRange]
         let movedLineRanges: [ClosedRange<Int>]
         let rowKinds: [SideBySideDocument.RowKind]
         let highlightSpans: [CodeHighlightSpan]

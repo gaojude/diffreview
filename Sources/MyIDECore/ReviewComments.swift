@@ -18,7 +18,15 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
     public let origin: Origin
     public let startLine: Int
     public let endLine: Int
-    /// The selected code, verbatim — the ground truth an agent greps for when applying changes.
+    /// 1-based column of the first selected character within `startLine`. Present (with
+    /// `endColumn`) when the comment targets the exact selected characters rather than
+    /// whole lines; absent on comments made before precision existed.
+    public let startColumn: Int?
+    /// 1-based column of the last selected character within `endLine` (inclusive).
+    public let endColumn: Int?
+    /// The selected code, verbatim — the ground truth an agent greps for when applying
+    /// changes. For precise comments this is the exact selection, which can start and end
+    /// mid-line.
     public let codeText: String
     public var body: String
     public let createdAt: Date
@@ -29,6 +37,8 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
         origin: Origin,
         startLine: Int,
         endLine: Int,
+        startColumn: Int? = nil,
+        endColumn: Int? = nil,
         codeText: String,
         body: String,
         createdAt: Date = Date()
@@ -38,13 +48,23 @@ public struct ReviewComment: Codable, Equatable, Identifiable, Sendable {
         self.origin = origin
         self.startLine = startLine
         self.endLine = endLine
+        self.startColumn = startColumn
+        self.endColumn = endColumn
         self.codeText = codeText
         self.body = body
         self.createdAt = createdAt
     }
 
+    /// Whether the comment targets exact characters (both columns known) or whole lines.
+    public var isPrecise: Bool { startColumn != nil && endColumn != nil }
+
     public var lineLabel: String {
-        startLine == endLine ? "line \(startLine)" : "lines \(startLine)–\(endLine)"
+        guard isPrecise, let startColumn, let endColumn else {
+            return startLine == endLine ? "line \(startLine)" : "lines \(startLine)–\(endLine)"
+        }
+        return startLine == endLine
+            ? "line \(startLine), chars \(startColumn)–\(endColumn)"
+            : "lines \(startLine):\(startColumn)–\(endLine):\(endColumn)"
     }
 }
 

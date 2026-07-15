@@ -823,6 +823,66 @@ do {
     check(loaded == [first, second], "comments round-trip through disk")
     check(ReviewCommentStore(rootURL: URL(fileURLWithPath: "/repo"), branchName: "main", storageRoot: tmp)
         .load().isEmpty, "comments are branch-scoped")
+
+    // Character-precise comments: columns round-trip, label them, and old persisted
+    // comments (no column fields) still decode as whole-line comments.
+    let precise = ReviewComment(
+        filePath: "src/app.ts",
+        origin: .diff,
+        startLine: 7,
+        endLine: 7,
+        startColumn: 9,
+        endColumn: 20,
+        codeText: "boundaryId,",
+        body: "Rename this."
+    )
+    check(precise.isPrecise, "comment with both columns is precise")
+    check(!first.isPrecise, "comment without columns is whole-line")
+    check(precise.lineLabel == "line 7, chars 9–20", "precise single-line label carries columns")
+    check(ReviewComment(
+        filePath: "a", origin: .diff, startLine: 3, endLine: 5,
+        startColumn: 2, endColumn: 4, codeText: "x", body: "b"
+    ).lineLabel == "lines 3:2–5:4", "precise multi-line label carries both endpoints")
+    store.save([precise])
+    check(store.load() == [precise], "precise comment round-trips through disk")
+
+    let legacyJSON = """
+    [{"id":"6F1E9BE2-6E4F-4B4C-9E75-6C0C2C4A5D11","filePath":"src/app.ts","origin":"diff",
+    "startLine":4,"endLine":5,"codeText":"+use(x)","body":"old comment","createdAt":0}]
+    """
+    let legacy = try? JSONDecoder().decode([ReviewComment].self, from: Data(legacyJSON.utf8))
+    check(legacy?.first?.isPrecise == false && legacy?.first?.startColumn == nil,
+          "pre-precision comments decode as whole-line")
+}
+
+// MARK: - SelectionGeometry (character-precise selection)
+
+section("SelectionGeometry")
+do {
+    let text = "let alpha = 1\nlet beta = 2\nlet gamma = 3"
+    let starts = [0, 14, 27] // line starts of the three lines
+
+    // "beta" on line 2: chars 5–8 (1-based), location 18 length 4.
+    let word = SelectionGeometry.preciseSelection(in: text, selectedLocation: 18, selectedLength: 4, lineStarts: starts)
+    check(word == PreciseSelection(startLine: 2, startColumn: 5, endLine: 2, endColumn: 8, exactText: "beta"),
+          "single word resolves to its exact columns")
+
+    // "1\nlet beta" spans lines 1–2.
+    let span = SelectionGeometry.preciseSelection(in: text, selectedLocation: 12, selectedLength: 10, lineStarts: starts)
+    check(span == PreciseSelection(startLine: 1, startColumn: 13, endLine: 2, endColumn: 8, exactText: "1\nlet beta"),
+          "multi-line selection carries per-endpoint columns")
+
+    // Selecting through the newline (drag past end of line) trims back to the last real char.
+    let overshoot = SelectionGeometry.preciseSelection(in: text, selectedLocation: 4, selectedLength: 10, lineStarts: starts)
+    check(overshoot == PreciseSelection(startLine: 1, startColumn: 5, endLine: 1, endColumn: 13, exactText: "alpha = 1"),
+          "trailing newline is dropped from the precise range")
+
+    check(SelectionGeometry.preciseSelection(in: text, selectedLocation: 13, selectedLength: 1, lineStarts: starts) == nil,
+          "newline-only selection has nothing precise to target")
+    check(SelectionGeometry.preciseSelection(in: text, selectedLocation: 18, selectedLength: 0, lineStarts: starts) == nil,
+          "empty selection -> nil")
+    check(SelectionGeometry.preciseSelection(in: text, selectedLocation: 40, selectedLength: 10, lineStarts: starts) == nil,
+          "out-of-bounds selection -> nil")
 }
 
 // MARK: - TSServer live (gated: needs a fixture with node_modules/typescript)

@@ -300,7 +300,7 @@ struct ContentPaneView: View {
                     topInset: 10,
                     fontSize: fontSize,
                     focusedLineRange: focusedDocumentRange,
-                    commentedLineRanges: rightCommentRanges(in: document),
+                    commentedRanges: rightCommentRanges(in: document),
                     moveLinks: moveLinkModels(in: document, pane: document.layout == .split ? .right : .unified),
                     rowKinds: document.rightKinds,
                     highlightSpans: highlightSpans(in: document, pane: document.layout == .split ? .right : .unified),
@@ -643,12 +643,21 @@ struct ContentPaneView: View {
             }
         }
         guard let startLine = fileLines.min(), let endLine = fileLines.max() else { return nil }
+        // Character precision carries over only when the selection's own endpoint rows map
+        // directly to file lines (nothing clamped away, no filler/deleted endpoints) — the
+        // displayed row text is then exactly the file line, so columns line up 1:1.
+        let endpointsMapDirectly = rows == context.startLine...max(context.endLine, context.startLine)
+            && document.rightFileLines[rows.lowerBound - 1] != nil
+            && document.rightFileLines[rows.upperBound - 1] != nil
         return CodeSelectionContext(
             fileURL: section.file.url,
             contentKind: .diff,
             startLine: startLine,
             endLine: endLine,
-            text: context.text
+            text: context.text,
+            startColumn: endpointsMapDirectly ? context.startColumn : nil,
+            endColumn: endpointsMapDirectly ? context.endColumn : nil,
+            exactText: endpointsMapDirectly ? context.exactText : nil
         )
     }
 
@@ -700,7 +709,11 @@ struct ContentPaneView: View {
             origin: context.contentKind == .diff ? .diff : .source,
             startLine: context.startLine,
             endLine: max(context.endLine, context.startLine),
-            codeText: context.text
+            startColumn: context.startColumn,
+            endColumn: context.endColumn,
+            // The exact selection is the ground truth when we have it — a comment on two
+            // words should hand an agent those two words, not their whole lines.
+            codeText: context.exactText ?? context.text
         ))
         if let documentSelection {
             let rows = documentSelection.startLine...max(documentSelection.endLine, documentSelection.startLine)
@@ -766,13 +779,19 @@ struct ContentPaneView: View {
         withAnimation(.easeInOut(duration: 0.2)) { showCommentsPanel = true }
     }
 
-    /// Row ranges (interactive pane) for every diff comment, so commented code stays tinted.
-    private func rightCommentRanges(in document: SideBySideDocument) -> [ClosedRange<Int>] {
+    /// Row ranges (interactive pane) for every diff comment, so commented code stays tinted —
+    /// with the original selection's columns attached when the comment is precise.
+    private func rightCommentRanges(in document: SideBySideDocument) -> [CommentedCodeRange] {
         comments.comments.compactMap { comment in
             guard comment.origin == .diff else { return nil }
-            return document.rowRange(
+            guard let rows = document.rowRange(
                 forNewFileLines: comment.startLine...max(comment.endLine, comment.startLine),
                 inSectionPath: comment.filePath
+            ) else { return nil }
+            return CommentedCodeRange(
+                rows: rows,
+                startColumn: comment.startColumn,
+                endColumn: comment.endColumn
             )
         }
     }
