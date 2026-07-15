@@ -149,7 +149,7 @@ struct ExplorerPanelView: View {
                         topInset: 58,
                         fontSize: fontSize,
                         focusedLineRange: explorer.currentFileEntry?.focusLineRange,
-                        commentedLineRanges: commentRanges,
+                        commentedRanges: commentRanges,
                         composerAnchorLines: draftAnchorLines,
                         scrollRequest: explorer.scrollRequest,
                         findQuery: find.isActive && !find.query.isEmpty ? find.query : nil,
@@ -223,11 +223,15 @@ struct ExplorerPanelView: View {
         }
     }
 
-    private var commentRanges: [ClosedRange<Int>] {
+    private var commentRanges: [CommentedCodeRange] {
         guard let entry = explorer.currentFileEntry else { return [] }
         return comments.comments.compactMap { comment in
             guard comment.origin == .source, comment.filePath == entry.displayPath else { return nil }
-            return comment.startLine...max(comment.endLine, comment.startLine)
+            return CommentedCodeRange(
+                rows: comment.startLine...max(comment.endLine, comment.startLine),
+                startColumn: comment.startColumn,
+                endColumn: comment.endColumn
+            )
         }
     }
 

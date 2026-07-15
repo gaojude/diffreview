@@ -309,6 +309,25 @@ struct MyIDEApp: App {
             fail("comments pane: delete did not clear state", code: 7)
         }
 
+        // Precise draft: the selection's exact characters and columns survive the commit.
+        controller.beginDraft(CommentDraft(
+            filePath: "src/main.ts",
+            origin: .diff,
+            startLine: 8,
+            endLine: 8,
+            startColumn: 7,
+            endColumn: 11,
+            codeText: "greet"
+        ))
+        controller.draftText = "Rename this identifier."
+        guard let preciseComment = controller.commitDraft(),
+              preciseComment.isPrecise,
+              preciseComment.startColumn == 7, preciseComment.endColumn == 11,
+              preciseComment.codeText == "greet" else {
+            fail("comments pane: precise draft lost its columns on commit", code: 8)
+        }
+        controller.delete(preciseComment.id)
+
         print("comments pane ok size=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
     }
 

@@ -8,6 +8,10 @@ struct CommentDraft: Equatable {
     let origin: ReviewComment.Origin
     let startLine: Int
     let endLine: Int
+    /// Character precision of the original selection (1-based columns within the start/end
+    /// lines); nil when the comment targets whole lines.
+    var startColumn: Int?
+    var endColumn: Int?
     let codeText: String
 
     var lineLabel: String {
@@ -61,6 +65,8 @@ final class ReviewCommentsController: ObservableObject {
             origin: draft.origin,
             startLine: draft.startLine,
             endLine: draft.endLine,
+            startColumn: draft.startColumn,
+            endColumn: draft.endColumn,
             codeText: draft.codeText,
             body: body
         )
