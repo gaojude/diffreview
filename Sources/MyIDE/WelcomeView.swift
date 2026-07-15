@@ -1,8 +1,11 @@
 import SwiftUI
+import MyIDECore
 
 struct WelcomeView: View {
     @ObservedObject var cliInstaller: CLIInstaller
+    var recentProjects: [RecentProject] = []
     let openProject: () -> Void
+    var openRecent: (URL) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: 28) {
@@ -28,6 +31,10 @@ struct WelcomeView: View {
             .controlSize(.large)
             .keyboardShortcut("o", modifiers: .command)
             .accessibilityIdentifier("welcome-open-project")
+
+            if !recentProjects.isEmpty {
+                recentsList
+            }
 
             Divider()
                 .frame(maxWidth: 520)
@@ -60,6 +67,46 @@ struct WelcomeView: View {
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Recently opened project roots, one click from reviewing again. Stale paths are pruned
+    /// at load, so every row here points at a directory that existed moments ago.
+    private var recentsList: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Recent Projects")
+                .font(.headline)
+                .padding(.bottom, 6)
+            ForEach(recentProjects, id: \.path) { recent in
+                Button {
+                    openRecent(URL(fileURLWithPath: recent.path, isDirectory: true))
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                        Text(recent.displayName)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                        Text(recent.path)
+                            .font(.callout)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .help(recent.path)
+                .accessibilityIdentifier("recent-project")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityIdentifier("recent-projects")
     }
 
     @ViewBuilder
@@ -125,7 +172,12 @@ struct AppRootView: View {
                 RootView(appState: project)
                     .id(project.id)
             } else {
-                WelcomeView(cliInstaller: session.cliInstaller, openProject: openProject)
+                WelcomeView(
+                    cliInstaller: session.cliInstaller,
+                    recentProjects: session.recentProjects,
+                    openProject: openProject,
+                    openRecent: { session.attachProject($0) }
+                )
             }
         }
         .onChange(of: session.roster.activeID) { _, _ in
