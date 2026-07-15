@@ -37,6 +37,10 @@ cat > "$MARGIN_TMP" <<EOF
 APP="$MARGIN_APP_BUNDLE"
 TARGET="\${1:--}"
 if [ "\$TARGET" = "-" ]; then
+  if [ -t 0 ]; then
+    echo "usage: margin <reply.md>   (or: some-command | margin -)" >&2
+    exit 2
+  fi
   INBOX="\$HOME/Library/Application Support/Margin/Inbox"
   mkdir -p "\$INBOX"
   FILE="\$INBOX/reply-\$(date +%Y%m%d-%H%M%S).md"
