@@ -18,7 +18,7 @@ export default function Home() {
 
       <div className="mt-10 flex flex-col sm:flex-row gap-3">
         <a
-          href="/DiffReview-v0.3.0.dmg"
+          href="/DiffReview-v0.4.0.dmg"
           className="inline-flex items-center gap-2 bg-white text-black px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
