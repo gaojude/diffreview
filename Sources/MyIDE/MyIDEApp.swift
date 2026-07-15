@@ -30,6 +30,12 @@ struct MyIDEApp: App {
             Foundation.exit(0)
         }
 
+        if CommandLine.arguments.contains("--comments-freeze-probe") {
+            // Seeds a long comment for the target repo, lets the app launch normally, then
+            // clicks the card and measures CPU. Scheduled work only — launch continues below.
+            Self.scheduleCommentsFreezeProbe()
+        }
+
         let initialRootURLs = Self.rootURLArguments()
         let session = AppSession(initialRootURLs: initialRootURLs)
         _session = StateObject(wrappedValue: session)
@@ -246,6 +252,131 @@ struct MyIDEApp: App {
         }
 
         print("project tabs ok strip=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
+    }
+
+    /// Regression probe for the comment-card freeze: clicking a card with a long body used
+    /// to start an endless SwiftUI transaction storm (`SelectionOverlay` re-invalidating
+    /// fonts every display cycle), pinning the main thread at 100% CPU. The probe seeds a
+    /// long comment for the target repo, lets the real window launch, synthesizes a click
+    /// on the card (own-process `NSApp.sendEvent`, no Accessibility needed), and measures
+    /// CPU across the following seconds — a storm consumes the whole wall-clock budget.
+    /// Run via `MyIDE --comments-freeze-probe <repo-dir>`; prints CPU and exits 1 on storm.
+    @MainActor
+    private static func scheduleCommentsFreezeProbe() {
+        // Seeds the LAST directory argument — with several dirs attached, that's the active
+        // tab (matching the report: two projects open, the second one showing).
+        guard let directory = FileSystem.resolveRootDirectoryArguments(
+            arguments: CommandLine.arguments,
+            currentDirectory: FileManager.default.currentDirectoryPath
+        ).last else {
+            FileHandle.standardError.write(Data("usage: MyIDE --comments-freeze-probe <directory>...\n".utf8))
+            Foundation.exit(2)
+        }
+        guard case .repository(let context) = GitChangeSet.load(for: directory) else {
+            FileHandle.standardError.write(Data("freeze probe: not a git repository\n".utf8))
+            Foundation.exit(2)
+        }
+        guard let target = context.files.first(where: { $0.status != .deleted }) else {
+            FileHandle.standardError.write(Data("freeze probe: no changed files to comment on\n".utf8))
+            Foundation.exit(2)
+        }
+
+        // Seed the persisted review with one long comment; the launching window loads it,
+        // auto-opens the panel, and shows the card — same starting state as the real report.
+        // Much taller than the panel viewport: the freeze needs the animated
+        // scroll-to-center of a card that cannot fit on screen.
+        let longBody = Array(
+            repeating: "I think you want to build this idea where agents can build any websites "
+                + "in any framework they want, but the property predicate lets us nudge the "
+                + "agent in the correct direction when it is generating code.",
+            count: 40
+        ).joined(separator: "\n\n")
+        // Never clobber a real review: seed only when this repo+branch has no comments yet.
+        let seedStore = ReviewCommentStore(rootURL: directory, branchName: context.branchName)
+        if seedStore.load().isEmpty {
+            seedStore.save([
+                ReviewComment(
+                    filePath: target.path,
+                    origin: .diff,
+                    startLine: 2,
+                    endLine: 4,
+                    codeText: "probe fixture selection",
+                    body: longBody
+                ),
+                ReviewComment(
+                    filePath: target.path, origin: .diff, startLine: 5, endLine: 5,
+                    codeText: "short one", body: "Tighten this."
+                ),
+                ReviewComment(
+                    filePath: target.path, origin: .diff, startLine: 6, endLine: 6,
+                    codeText: "another", body: "Rename for clarity."
+                ),
+            ])
+        }
+
+        func cpuSeconds() -> Double {
+            var usage = rusage()
+            getrusage(RUSAGE_SELF, &usage)
+            func seconds(_ time: timeval) -> Double { Double(time.tv_sec) + Double(time.tv_usec) / 1_000_000 }
+            return seconds(usage.ru_utime) + seconds(usage.ru_stime)
+        }
+
+        // Events are POSTED (queued), never sent synchronously: a synchronous mouseDown into
+        // a text view enters its mouse-tracking loop and deadlocks waiting for the mouseUp.
+        func postClick(at windowPoint: NSPoint, in window: NSWindow) {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let event = NSEvent.mouseEvent(
+                    with: type,
+                    location: windowPoint,
+                    modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber,
+                    context: nil,
+                    eventNumber: 0,
+                    clickCount: 1,
+                    pressure: 1
+                ) {
+                    NSApp.postEvent(event, atStart: false)
+                }
+            }
+        }
+
+        // Match the reported environment: enlarged font, unified layout.
+        AppConfigurationStore.standard().save(AppConfiguration(fontSize: 20, diffLayout: .unified))
+
+        // T+6s: the diff and panel have loaded; sweep clicks down the comments column so at
+        // least one lands on the long card regardless of exact header/card layout.
+        let clickDelay = 6.0
+        let measureSeconds = 5.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + clickDelay) {
+            guard let window = NSApp.windows.first(where: { $0.canBecomeKey }) else {
+                FileHandle.standardError.write(Data("freeze probe: no window appeared\n".utf8))
+                Foundation.exit(2)
+            }
+            let height = window.contentLayoutRect.height
+            for offsetFromTop in stride(from: 220.0, through: 620.0, by: 100.0) {
+                postClick(at: NSPoint(x: 150, y: height - offsetFromTop), in: window)
+            }
+
+            let startCPU = cpuSeconds()
+            DispatchQueue.main.asyncAfter(deadline: .now() + measureSeconds) {
+                let burned = cpuSeconds() - startCPU
+                let storming = burned > measureSeconds * 0.5
+                print(String(format: "comments freeze probe: %.2fs CPU over %.0fs wall after click — %@",
+                             burned, measureSeconds, storming ? "STORMING" : "quiet"))
+                Foundation.exit(storming ? 1 : 0)
+            }
+        }
+
+        // Watchdog on a background queue: if the main thread wedges (storm or deadlock), it
+        // never reaches the report above — decide from CPU alone and exit anyway.
+        DispatchQueue.global().asyncAfter(deadline: .now() + clickDelay + measureSeconds + 6.0) {
+            let total = cpuSeconds()
+            let storming = total > measureSeconds
+            print(String(format: "comments freeze probe (watchdog): main thread unresponsive, %.2fs total CPU — %@",
+                         total, storming ? "STORMING" : "wedged-but-quiet"))
+            Foundation.exit(storming ? 1 : 3)
+        }
     }
 
     /// Headless harness for the review-comments flow: drives the real controller through

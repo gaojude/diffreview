@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MyIDECore
 
@@ -257,6 +258,16 @@ private struct CommentCard: View {
                 Spacer(minLength: 0)
                 if isHovering || isSelected {
                     Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(comment.body, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy comment text")
+
+                    Button {
                         onDelete()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -270,9 +281,13 @@ private struct CommentCard: View {
 
             snippet
 
+            // Deliberately NOT .textSelection(.enabled): on macOS 26, the selection overlay
+            // of a long selected card re-invalidates its font metrics every display cycle,
+            // wedging the main thread in an endless SwiftUI transaction storm (100% CPU
+            // freeze — reproduced and sampled from a real review). The copy button covers
+            // getting the text out.
             Text(comment.body)
                 .font(.system(size: fontSize))
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 2)
         }
