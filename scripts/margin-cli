@@ -1,0 +1,41 @@
+#!/bin/sh
+# Launcher embedded in Margin.app. Resolve a /usr/local/bin/margin symlink back to the
+# bundle using portable macOS `readlink` (BSD readlink does not provide `-f`).
+set -eu
+
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
+  LINK_TARGET="$(readlink "$SELF")"
+  case "$LINK_TARGET" in
+    /*) SELF="$LINK_TARGET" ;;
+    *) SELF="$LINK_DIR/$LINK_TARGET" ;;
+  esac
+done
+
+SCRIPT_DIR="$(CDPATH= cd -P -- "$(dirname -- "$SELF")" && pwd)"
+APP="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# One argument: the reply file to review. `-` (or a pipe with no argument) reads stdin into
+# the Margin inbox first, so an agent can stream a reply straight in.
+TARGET="${1:--}"
+if [ "$TARGET" = "-" ]; then
+  INBOX="$HOME/Library/Application Support/Margin/Inbox"
+  mkdir -p "$INBOX"
+  FILE="$INBOX/reply-$(date +%Y%m%d-%H%M%S).md"
+  cat > "$FILE"
+else
+  DIR="$(cd "$(dirname "$TARGET")" 2>/dev/null && pwd)" || {
+    echo "margin: not a file: $TARGET" >&2
+    exit 1
+  }
+  FILE="$DIR/$(basename "$TARGET")"
+  [ -f "$FILE" ] || {
+    echo "margin: not a file: $TARGET" >&2
+    exit 1
+  }
+fi
+
+# Files are sent as open-events (the app claims plain text), so a running Margin swaps to
+# the new reply; only a cold start launches a new instance.
+open -a "$APP" "$FILE"

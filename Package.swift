@@ -18,6 +18,19 @@ let package = Package(
             name: "MyIDECore",
             path: "Sources/MyIDECore"
         ),
+        // Prose-review logic for Margin (selections, comments, formatter, store) — same
+        // pure-Foundation rule as MyIDECore, covered by the same self-test executable.
+        .target(
+            name: "MarginCore",
+            path: "Sources/MarginCore"
+        ),
+        // Margin: review an agent's reply like a diff — pipe a markdown file in, select
+        // exact passages, comment in a pane, copy the review as one prompt-ready block.
+        .executableTarget(
+            name: "Margin",
+            dependencies: ["MarginCore"],
+            path: "Sources/Margin"
+        ),
         // The native SwiftUI/AppKit application.
         .executableTarget(
             name: "MyIDE",
@@ -31,7 +44,7 @@ let package = Package(
         // non-zero on failure. Works under Command Line Tools (no `xctest`).
         .executableTarget(
             name: "MyIDESelfTest",
-            dependencies: ["MyIDECore"],
+            dependencies: ["MyIDECore", "MarginCore"],
             path: "Sources/MyIDESelfTest"
         ),
     ]
