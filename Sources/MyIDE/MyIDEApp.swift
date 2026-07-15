@@ -205,7 +205,8 @@ struct MyIDEApp: App {
         }
         defer { try? FileManager.default.removeItem(at: base) }
 
-        let session = AppSession(initialRootURLs: [dirA])
+        let recentsStore = RecentProjectsStore(storageRoot: base)
+        let session = AppSession(initialRootURLs: [dirA], recentsStore: recentsStore)
         guard session.projects.count == 1, session.activeProject?.rootURL.path == dirA.resolvingSymlinksInPath().path else {
             fail("project tabs: initial attach failed", code: 3)
         }
@@ -251,7 +252,23 @@ struct MyIDEApp: App {
             fail("project tabs: closing the last project did not empty the window", code: 11)
         }
 
-        print("project tabs ok strip=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height))")
+        // Recents: every attach recorded, most recent first — dirA was re-attached after
+        // dirB, so it leads despite being opened first.
+        guard session.recentProjects.map(\.displayName) == ["alpha", "beta"] else {
+            fail("project tabs: attaches were not recorded as recents (most recent first)", code: 12)
+        }
+        let welcome = NSHostingView(rootView: WelcomeView(
+            cliInstaller: session.cliInstaller,
+            recentProjects: session.recentProjects,
+            openProject: {}
+        ))
+        welcome.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
+        welcome.layoutSubtreeIfNeeded()
+        guard welcome.fittingSize.height > 0 else {
+            fail("project tabs: welcome screen with recents has no visible layout", code: 13)
+        }
+
+        print("project tabs ok strip=\(Int(host.fittingSize.width))x\(Int(host.fittingSize.height)) recents=\(session.recentProjects.count)")
     }
 
     /// Regression probe for the comment-card freeze: clicking a card with a long body used

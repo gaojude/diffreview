@@ -53,8 +53,9 @@ by a thin `diffreview` command — like `code .`, but native.
 ## Install
 
 Download the DMG from [diffreview.dev](https://diffreview.dev), drag **DiffReview** to Applications,
-and open it. Choose **Open Project Folder…** on the welcome screen (or press `⌘O`). To use
-DiffReview from Terminal, click **Install CLI** on that same screen.
+and open it. Choose **Open Project Folder…** on the welcome screen (or press `⌘O`) — projects
+you've opened before are listed right there for one-click reopening. To use DiffReview from
+Terminal, click **Install CLI** on that same screen.
 
 You can also link the bundled CLI manually:
 
