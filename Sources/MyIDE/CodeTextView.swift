@@ -373,6 +373,8 @@ struct CodeTextView: NSViewRepresentable {
         private var findMatches: [NSRange] = []
         private var findKey: String?
         private var lastFindScrollKey: String?
+        /// The match currently tinted orange, so stepping repaints two ranges, not all 5000.
+        private var lastActiveFindMatch: NSRange?
         private var currentFontSize: CGFloat = 0
         /// Set when new text loads; consumed by the deferred viewport pass once the view has
         /// real geometry, snapping the horizontal origin flush left of the gutter. (Scrolling
@@ -395,6 +397,7 @@ struct CodeTextView: NSViewRepresentable {
                     findKey = nil
                     findMatches = []
                     lastFindScrollKey = nil
+                    lastActiveFindMatch = nil
                 }
                 return
             }
@@ -423,6 +426,7 @@ struct CodeTextView: NSViewRepresentable {
                         forCharacterRange: match
                     )
                 }
+                lastActiveFindMatch = nil // ranges belong to the new text; the old one is gone
                 let count = findMatches.count
                 DispatchQueue.main.async { [weak self] in
                     self?.onFindResults?(count)
@@ -433,25 +437,26 @@ struct CodeTextView: NSViewRepresentable {
             let normalized = ((activeIndex % findMatches.count) + findMatches.count) % findMatches.count
             let active = findMatches[normalized]
 
-            // Re-tint: previous active back to yellow, current to orange.
-            for match in findMatches {
+            // applyFind runs on every SwiftUI update; only an actual active-match transition
+            // needs painting (two ranges), never a full repaint of up to 5000 matches.
+            let scrollKey = "\(key)@\(normalized)"
+            guard scrollKey != lastFindScrollKey else { return }
+            lastFindScrollKey = scrollKey
+
+            if let previous = lastActiveFindMatch {
                 layoutManager.addTemporaryAttribute(
                     .backgroundColor,
                     value: NSColor.systemYellow.withAlphaComponent(0.4),
-                    forCharacterRange: match
+                    forCharacterRange: previous
                 )
             }
+            lastActiveFindMatch = active
             layoutManager.addTemporaryAttribute(
                 .backgroundColor,
                 value: NSColor.systemOrange.withAlphaComponent(0.75),
                 forCharacterRange: active
             )
-
-            let scrollKey = "\(key)@\(normalized)"
-            if scrollKey != lastFindScrollKey {
-                lastFindScrollKey = scrollKey
-                scrollToLine(lineNumber(at: active.location))
-            }
+            scrollToLine(lineNumber(at: active.location))
         }
 
         /// Forwards commented row ranges to the container, which draws the left-edge marker
@@ -563,22 +568,22 @@ struct CodeTextView: NSViewRepresentable {
             }
             // Header controls, comment markers, and the gutter track scrolling in the same
             // transaction — their positions are pure arithmetic (fixed row height), no
-            // TextKit queries, so this is safe here.
+            // TextKit queries, so this is safe here. The comment button is NOT: its position
+            // needs the selection's glyph rect, so it rides the deferred callbacks below.
             containerView?.layoutSectionHeaders()
             containerView?.layoutCommentMarkers()
             containerView?.layoutMoveLinks()
             containerView?.refreshGutter()
-            updateCommentButton()
             scheduleViewportCallbacks()
         }
 
-        /// Defers scroll-spy and composer-anchor reporting to the next runloop turn. Bounds
-        /// changes also fire *during* text-storage edits and layout passes; querying the layout
-        /// manager synchronously from there is TextKit reentrancy (intermittent crashes), and
-        /// reporting upward would mutate SwiftUI state mid-view-update. Deferring also
-        /// coalesces per-frame scroll floods.
+        /// Defers scroll-spy, composer-anchor, and comment-button updates to the next runloop
+        /// turn. Bounds changes also fire *during* text-storage edits and layout passes;
+        /// querying the layout manager synchronously from there is TextKit reentrancy
+        /// (intermittent crashes), and reporting upward would mutate SwiftUI state
+        /// mid-view-update. Deferring also coalesces per-frame scroll floods.
         func scheduleViewportCallbacks() {
-            guard onFirstVisibleLineChange != nil || onComposerAnchorChange != nil else { return }
+            guard onFirstVisibleLineChange != nil || onComposerAnchorChange != nil || allowsCommenting else { return }
             guard !pendingTopLineEmit else { return }
             pendingTopLineEmit = true
             DispatchQueue.main.async { [weak self] in
@@ -587,6 +592,7 @@ struct CodeTextView: NSViewRepresentable {
                 self.performPendingInitialXResetIfNeeded()
                 self.emitFirstVisibleLineIfChanged()
                 self.reportComposerAnchor()
+                self.updateCommentButton()
             }
         }
 
@@ -1021,7 +1027,12 @@ struct CodeTextView: NSViewRepresentable {
             } else if resetScroll {
                 scroll(toDocumentY: 0)
             }
-            emitSelection()
+            // Deferred: apply() runs synchronously inside makeNSView/updateNSView, and
+            // emitSelection reports upward into SwiftUI state — writing state mid-view-update
+            // is undefined behavior. Same deferral discipline as scheduleViewportCallbacks.
+            DispatchQueue.main.async { [weak self] in
+                self?.emitSelection()
+            }
             scheduleViewportCallbacks()
         }
 
@@ -1257,6 +1268,12 @@ struct CodeTextView: NSViewRepresentable {
         ) -> NSAttributedString {
             let result = NSMutableAttributedString(attributedString: attributedString)
 
+            // One O(document) line scan shared by every band below — the bands used to
+            // re-walk the whole string per commented/moved/focused range, which on a huge
+            // document with many comments multiplied into real CPU per restyle.
+            let nsString = result.string as NSString
+            let lineTable = lineRangeTable(for: nsString)
+
             let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             if contentKind == .diff {
                 // Same point size as the body on purpose: the bare-text first paint and the
@@ -1266,13 +1283,8 @@ struct CodeTextView: NSViewRepresentable {
                     .foregroundColor: NSColor.labelColor,
                     .backgroundColor: NSColor.secondaryLabelColor.withAlphaComponent(isDark ? 0.14 : 0.08),
                 ]
-                let nsString = result.string as NSString
-                var location = 0
-                var row = 0
-
-                while location < nsString.length {
-                    let lineRange = nsString.lineRange(for: NSRange(location: location, length: 0))
-                    row += 1
+                for (index, lineRange) in lineTable.enumerated() {
+                    let row = index + 1
                     if row <= rowKinds.count {
                         applyRowStyle(
                             rowKinds[row - 1],
@@ -1290,14 +1302,13 @@ struct CodeTextView: NSViewRepresentable {
                             applyDiffStyle(to: result, line: line, range: lineRange, isDark: isDark)
                         }
                     }
-                    location = NSMaxRange(lineRange)
                 }
             }
 
             // Moved code gets a violet wash over the usual add/delete tint — the same block
             // reads as one thing in both places, like `git diff --color-moved`.
             for range in movedLineRanges {
-                if let characterRange = characterRange(forLineRange: range, in: result.string as NSString) {
+                if let characterRange = characterRange(forLineRange: range, table: lineTable, stringLength: nsString.length) {
                     result.addAttribute(
                         .backgroundColor,
                         value: NSColor.systemPurple.withAlphaComponent(isDark ? 0.20 : 0.12),
@@ -1309,7 +1320,7 @@ struct CodeTextView: NSViewRepresentable {
             // Commented code gets a solid teal band (plus the marker bar the container draws
             // at the left edge); syntax colors stay readable underneath.
             for range in commentedLineRanges {
-                if let characterRange = characterRange(forLineRange: range, in: result.string as NSString) {
+                if let characterRange = characterRange(forLineRange: range, table: lineTable, stringLength: nsString.length) {
                     result.addAttribute(
                         .backgroundColor,
                         value: NSColor.systemTeal.withAlphaComponent(isDark ? 0.26 : 0.17),
@@ -1320,7 +1331,7 @@ struct CodeTextView: NSViewRepresentable {
 
             // The focus flash (jumping to a comment) outranks the comment band.
             if let focusedLineRange,
-               let characterRange = characterRange(forLineRange: focusedLineRange, in: result.string as NSString) {
+               let characterRange = characterRange(forLineRange: focusedLineRange, table: lineTable, stringLength: nsString.length) {
                 result.addAttribute(
                     .backgroundColor,
                     value: NSColor.systemYellow.withAlphaComponent(isDark ? 0.24 : 0.20),
@@ -1331,30 +1342,30 @@ struct CodeTextView: NSViewRepresentable {
             return result
         }
 
-        private static func characterRange(forLineRange lineRange: ClosedRange<Int>, in string: NSString) -> NSRange? {
-            guard string.length > 0 else { return nil }
-            let lower = max(lineRange.lowerBound, 1)
-            let upper = max(lineRange.upperBound, lower)
-            var line = 1
+        /// Character range of every line, in order — computed once per styling pass so the
+        /// band helpers below are table lookups instead of whole-document rescans.
+        private static func lineRangeTable(for string: NSString) -> [NSRange] {
+            var table: [NSRange] = []
             var location = 0
-            var start: Int?
-            var end: Int?
-
             while location < string.length {
-                let currentRange = string.lineRange(for: NSRange(location: location, length: 0))
-                if line == lower {
-                    start = currentRange.location
-                }
-                if line == upper {
-                    end = NSMaxRange(currentRange)
-                    break
-                }
-                location = NSMaxRange(currentRange)
-                line += 1
+                let lineRange = string.lineRange(for: NSRange(location: location, length: 0))
+                table.append(lineRange)
+                location = NSMaxRange(lineRange)
             }
+            return table
+        }
 
-            guard let start else { return nil }
-            return NSRange(location: start, length: max((end ?? string.length) - start, 0))
+        private static func characterRange(
+            forLineRange lineRange: ClosedRange<Int>,
+            table: [NSRange],
+            stringLength: Int
+        ) -> NSRange? {
+            let lower = max(lineRange.lowerBound, 1)
+            guard lower <= table.count else { return nil }
+            let upper = max(lineRange.upperBound, lower)
+            let start = table[lower - 1].location
+            let end = upper <= table.count ? NSMaxRange(table[upper - 1]) : stringLength
+            return NSRange(location: start, length: max(end - start, 0))
         }
 
         /// Side-by-side row backgrounds. Syntax colors from the highlighter stay; only the
@@ -1520,6 +1531,9 @@ final class SelectionAskContainerView: NSView {
     private var headerToggle: ((String) -> Void)?
     private var headerOpen: ((String) -> Void)?
     private var headerViews: [String: NSHostingView<DiffSectionHeaderBar>] = [:]
+    /// The model each header view currently renders — same rootView-reassignment gate as the
+    /// move-link chips: scrolling must never invalidate SwiftUI content.
+    private var headerRenderedModels: [String: DiffSectionHeaderModel] = [:]
 
     private let gutterView = LineNumberGutterView()
 
@@ -1534,6 +1548,12 @@ final class SelectionAskContainerView: NSView {
     private var moveLinkTopInset: CGFloat = 8
     private var moveLinkTap: ((MoveLinkModel) -> Void)?
     private var moveLinkViews: [String: NSHostingView<MoveLinkChip>] = [:]
+    /// What each chip view currently renders + its measured size. `layout()` runs on every
+    /// scroll tick; reassigning `rootView` or querying `fittingSize` there re-invalidates
+    /// layout and can escalate into an endless display-cycle storm (the comment-card freeze
+    /// class). Both happen at most once per model change instead.
+    private var moveLinkRenderedModels: [String: MoveLinkModel] = [:]
+    private var moveLinkSizes: [String: NSSize] = [:]
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1563,8 +1583,12 @@ final class SelectionAskContainerView: NSView {
     }
 
     func updateCommentButton(selectionRect: NSRect?, isVisible: Bool) {
+        // Idempotence matters: this runs per scroll tick, and an unconditional
+        // `needsLayout = true` would double every overlay layout pass.
+        let hidden = !isVisible || selectionRect == nil
+        guard selectionRect != self.selectionRect || hidden != commentButton.isHidden else { return }
         self.selectionRect = selectionRect
-        commentButton.isHidden = !isVisible || selectionRect == nil
+        commentButton.isHidden = hidden
         needsLayout = true
     }
 
@@ -1671,6 +1695,8 @@ final class SelectionAskContainerView: NSView {
         guard !moveLinkModels.isEmpty, let scrollView = installedScrollView else {
             moveLinkViews.values.forEach { $0.removeFromSuperview() }
             moveLinkViews.removeAll()
+            moveLinkRenderedModels.removeAll()
+            moveLinkSizes.removeAll()
             return
         }
         let clipOriginY = scrollView.contentView.bounds.origin.y
@@ -1684,18 +1710,27 @@ final class SelectionAskContainerView: NSView {
             let isNearViewport = y > -moveLinkRowHeight - visibleMargin && y < bounds.height + visibleMargin
 
             if isNearViewport {
-                let chip = MoveLinkChip(model: model, onTap: { [weak self] in self?.moveLinkTap?(model) })
                 let view: NSHostingView<MoveLinkChip>
                 if let existing = moveLinkViews[model.id] {
-                    existing.rootView = chip
                     view = existing
                 } else {
-                    let created = NSHostingView(rootView: chip)
+                    let created = NSHostingView(
+                        rootView: MoveLinkChip(model: model, onTap: { [weak self] in self?.moveLinkTap?(model) })
+                    )
                     moveLinkViews[model.id] = created
+                    moveLinkRenderedModels[model.id] = model
+                    moveLinkSizes[model.id] = created.fittingSize
                     addSubview(created, positioned: .below, relativeTo: commentButton)
                     view = created
                 }
-                let size = view.fittingSize
+                // Invalidate the SwiftUI content (and re-measure) only when the model truly
+                // changed — never as a side effect of scrolling past it.
+                if moveLinkRenderedModels[model.id] != model {
+                    view.rootView = MoveLinkChip(model: model, onTap: { [weak self] in self?.moveLinkTap?(model) })
+                    moveLinkRenderedModels[model.id] = model
+                    moveLinkSizes[model.id] = view.fittingSize
+                }
+                let size = moveLinkSizes[model.id] ?? NSSize(width: 160, height: 20)
                 view.frame = NSRect(
                     x: max(bounds.width - size.width - 14, 0),
                     y: y,
@@ -1705,12 +1740,16 @@ final class SelectionAskContainerView: NSView {
             } else if let existing = moveLinkViews[model.id] {
                 existing.removeFromSuperview()
                 moveLinkViews.removeValue(forKey: model.id)
+                moveLinkRenderedModels.removeValue(forKey: model.id)
+                moveLinkSizes.removeValue(forKey: model.id)
             }
         }
 
         for (id, view) in moveLinkViews where !validIDs.contains(id) {
             view.removeFromSuperview()
             moveLinkViews.removeValue(forKey: id)
+            moveLinkRenderedModels.removeValue(forKey: id)
+            moveLinkSizes.removeValue(forKey: id)
         }
     }
 
@@ -1735,6 +1774,7 @@ final class SelectionAskContainerView: NSView {
         for (path, view) in headerViews where !validPaths.contains(path) {
             view.removeFromSuperview()
             headerViews.removeValue(forKey: path)
+            headerRenderedModels.removeValue(forKey: path)
         }
         layoutSectionHeaders()
     }
@@ -1745,6 +1785,7 @@ final class SelectionAskContainerView: NSView {
         guard !headerModels.isEmpty, let scrollView = installedScrollView else {
             headerViews.values.forEach { $0.removeFromSuperview() }
             headerViews.removeAll()
+            headerRenderedModels.removeAll()
             return
         }
         let clipOriginY = scrollView.contentView.bounds.origin.y
@@ -1771,18 +1812,24 @@ final class SelectionAskContainerView: NSView {
                 && y < bounds.height + visibleMargin
 
             if isNearViewport {
-                let bar = DiffSectionHeaderBar(
-                    model: model,
-                    onToggle: { [weak self] in self?.headerToggle?(model.path) },
-                    onOpen: { [weak self] in self?.headerOpen?(model.path) }
-                )
+                func bar() -> DiffSectionHeaderBar {
+                    DiffSectionHeaderBar(
+                        model: model,
+                        onToggle: { [weak self] in self?.headerToggle?(model.path) },
+                        onOpen: { [weak self] in self?.headerOpen?(model.path) }
+                    )
+                }
                 let view: NSHostingView<DiffSectionHeaderBar>
                 if let existing = headerViews[model.path] {
-                    existing.rootView = bar
                     view = existing
+                    if headerRenderedModels[model.path] != model {
+                        existing.rootView = bar()
+                        headerRenderedModels[model.path] = model
+                    }
                 } else {
-                    let created = NSHostingView(rootView: bar)
+                    let created = NSHostingView(rootView: bar())
                     headerViews[model.path] = created
+                    headerRenderedModels[model.path] = model
                     addSubview(created, positioned: .below, relativeTo: commentButton)
                     view = created
                 }
@@ -1790,6 +1837,7 @@ final class SelectionAskContainerView: NSView {
             } else if let existing = headerViews[model.path] {
                 existing.removeFromSuperview()
                 headerViews.removeValue(forKey: model.path)
+                headerRenderedModels.removeValue(forKey: model.path)
             }
         }
     }
@@ -2028,6 +2076,14 @@ struct DiffSectionHeaderBar: View {
             if hovering {
                 NSCursor.pointingHand.push()
             } else {
+                NSCursor.pop()
+            }
+        }
+        // The bar's hosting view is recycled when scrolled far off-screen; if that happens
+        // mid-hover, .onHover(false) never fires and the pushed cursor would stick globally.
+        .onDisappear {
+            if isHovering {
+                isHovering = false
                 NSCursor.pop()
             }
         }
