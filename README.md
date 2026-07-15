@@ -79,6 +79,28 @@ diffreview wt-a wt-b       # several projects at once, one window, one tab each
 diffreview ../other-repo   # while a review is open: attaches as another tab
 ```
 
+## Margin — review a reply like a diff
+
+The repo also builds **Margin**, a sibling app for reviewing an *agent's prose reply* the
+way DiffReview reviews a branch. Pipe a reply in and the window is the reply:
+
+```sh
+margin notes.md          # review a file
+pbpaste | margin -       # or pipe a reply straight in
+```
+
+- **Character-granular comments** — select any passage, down to a single word (not just
+  whole lines), and press `⌘K`: the same glass composer opens under the selection.
+- **The same review loop** — comments collect in the side pane with exact-range teal
+  highlights; **Copy** exports one prompt-ready block that quotes each selected passage
+  verbatim, ready to paste back into the agent.
+- **Agent-collectable reviews** — every review persists per content hash under
+  `~/Library/Application Support/Margin/Reviews`, and `last-review.json` points at the
+  newest one, so an agent can read the comments programmatically instead of via the
+  clipboard.
+
+`scripts/install.sh` installs the `margin` shim alongside `diffreview`.
+
 ## Shortcuts
 
 | Key           | Action                                             |

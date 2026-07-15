@@ -1,4 +1,5 @@
 import Foundation
+import MarginCore
 import MyIDECore
 
 // Lightweight assertion harness. Runs under Command Line Tools (no XCTest / xctest tool).
@@ -1233,6 +1234,64 @@ do {
     let empty = GitHubPullRequestLocator.environmentWithSearchPaths([:])
     check(empty["PATH"] == "/opt/homebrew/bin:/usr/local/bin",
           "missing PATH still gains the Homebrew prefixes")
+}
+
+
+section("Margin: prose selection geometry")
+do {
+    let text = "alpha beta\ngamma \u{00e9}\u{0301}delta\nfinal line"
+    let starts = ProseGeometry.lineStarts(of: text)
+    check(starts == [0, 11, 25], "line starts computed in UTF-16 offsets")
+    let position = ProseGeometry.position(ofUTF16Offset: 17, lineStarts: starts)
+    check(position.line == 2 && position.column == 7, "offset maps to 1-based line/column")
+
+    let selection = ProseGeometry.selection(in: text, utf16Range: NSRange(location: 6, length: 10))
+    check(selection?.text == "beta\ngamma", "selection extracts exact text across lines")
+    check(selection?.startLine == 1 && selection?.endLine == 2, "selection spans the right lines")
+    check(selection?.startColumn == 7 && selection?.endColumn == 5, "selection endpoints carry columns")
+
+    // A range that starts mid-way through a composed character expands to include it.
+    let composed = ProseGeometry.selection(in: text, utf16Range: NSRange(location: 18, length: 2))
+    check(composed?.text.hasPrefix("\u{00e9}\u{0301}") == true, "composed characters are never split")
+
+    check(ProseGeometry.selection(in: text, utf16Range: NSRange(location: 5, length: 1)) == nil,
+          "whitespace-only selections are rejected")
+    check(ProseGeometry.selection(in: text, utf16Range: NSRange(location: 9_999, length: 4)) == nil,
+          "out-of-bounds selections are rejected")
+}
+
+section("Margin: prose review formatting and persistence")
+do {
+    let text = "The quick brown fox\njumps over the lazy dog.\n"
+    guard let selection = ProseGeometry.selection(in: text, utf16Range: NSRange(location: 4, length: 11)) else {
+        check(false, "fixture selection resolves")
+        fatalError("unreachable")
+    }
+    let comment = ProseComment(selection: selection, body: "Name the animal precisely.")
+    check(comment.quotedText == "quick brown", "comment stores the quoted text verbatim")
+    check(comment.utf16Range(clampedToLength: 5)?.length == 1,
+          "highlight range clamps to shorter content instead of painting out of bounds")
+
+    let formatted = ProseReviewFormatter.format(comments: [comment], title: "fixture")
+    check(formatted.contains("review comment"), "formatter announces the review")
+    check(formatted.contains("```\nquick brown\n```"), "formatter fences the quote verbatim")
+    check(formatted.contains("Name the animal precisely."), "formatter includes the comment body")
+    check(ProseReviewFormatter.format(comments: []).isEmpty, "empty review formats to nothing")
+
+    let storageRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("margin-core-selftest-\(ProcessInfo.processInfo.processIdentifier)")
+    defer { try? FileManager.default.removeItem(at: storageRoot) }
+    let store = ProseReviewStore(contentText: text, sourcePath: "/tmp/fixture.md", storageRoot: storageRoot)
+    store.save([comment], title: "fixture")
+    let reloaded = ProseReviewStore(contentText: text, sourcePath: nil, storageRoot: storageRoot)
+    check(reloaded.load() == [comment], "store round-trips comments by content key")
+    check(ProseReviewStore(contentText: text + "x", sourcePath: nil, storageRoot: storageRoot).load().isEmpty,
+          "different content resolves a different review")
+
+    let pointerURL = storageRoot.appendingPathComponent("last-review.json")
+    let pointer = (try? Data(contentsOf: pointerURL)).flatMap { try? JSONDecoder().decode(ProseReviewPointer.self, from: $0) }
+    check(pointer?.sourcePath == "/tmp/fixture.md", "last-review pointer records the reviewed file")
+    check(pointer?.contentKey == store.contentKey, "last-review pointer records the content key")
 }
 
 print("")
