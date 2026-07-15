@@ -806,11 +806,14 @@ do {
 
     let formatted = ReviewCommentFormatter.format(comments: [first, second])
     check(formatted.hasPrefix("Apply the following 2 code review comments:"), "formatter leads with the ask")
-    check(formatted.contains("1. src/app.ts (diff lines 4–5)"), "diff comment labeled with patch lines")
-    check(formatted.contains("2. src/lib.ts (line 12)"), "source comment labeled with file line")
+    check(formatted.contains("1. [\(first.shortID)] src/app.ts (diff lines 4–5)"), "diff comment labeled with id and patch lines")
+    check(formatted.contains("2. [\(second.shortID)] src/lib.ts (line 12)"), "source comment labeled with id and file line")
     check(formatted.contains("+const x = 1\n+use(x)"), "selected code embedded verbatim")
     check(formatted.contains("Rename x to something meaningful."), "comment body embedded")
+    check(formatted.contains("diffreview respond \(first.shortID)"), "formatter ends with reply instructions")
     check(ReviewCommentFormatter.format(comments: []).isEmpty, "no comments -> empty string")
+    check(first.shortID.count == 8 && first.shortID == first.shortID.lowercased(),
+          "short id is the lowercased first UUID group")
 
     let fm = FileManager.default
     let tmp = fm.temporaryDirectory.appendingPathComponent("myide-comments-\(UUID().uuidString)")
@@ -853,6 +856,52 @@ do {
     let legacy = try? JSONDecoder().decode([ReviewComment].self, from: Data(legacyJSON.utf8))
     check(legacy?.first?.isPrecise == false && legacy?.first?.startColumn == nil,
           "pre-precision comments decode as whole-line")
+    check(legacy?.first?.replies.isEmpty == true, "pre-reply comments decode with no replies")
+
+    // Agent replies: round-trip through disk, and CLI-style delivery by id prefix across
+    // every persisted review under the storage root (`ReviewCommentReplyService`).
+    let replied = ReviewComment(
+        id: UUID(uuidString: "AAAA1111-0000-4000-8000-000000000001")!,
+        filePath: "src/app.ts", origin: .diff, startLine: 4, endLine: 5,
+        codeText: "+use(x)", body: "Why is this needed?",
+        replies: [ReviewCommentReply(body: "It guards the boundary against a null scope.")]
+    )
+    store.save([replied])
+    check(store.load() == [replied], "comment with replies round-trips through disk")
+
+    let sibling = ReviewComment(
+        id: UUID(uuidString: "AAAA2222-0000-4000-8000-000000000002")!,
+        filePath: "src/lib.ts", origin: .source, startLine: 12, endLine: 12,
+        codeText: "greet", body: "Add a doc comment."
+    )
+    ReviewCommentStore(rootURL: URL(fileURLWithPath: "/repo"), branchName: "main", storageRoot: tmp)
+        .save([sibling])
+
+    switch ReviewCommentReplyService.applyReply(idPrefix: "[aaaa2222]", body: "Done.", storageRoot: tmp) {
+    case .applied(let comment, _):
+        check(comment.id == sibling.id, "reply lands on the prefix-matched comment")
+        check(comment.replies.map(\.body) == ["Done."], "reply body appended")
+    default:
+        check(false, "unique prefix (brackets tolerated) applies the reply")
+    }
+    let reloadedSibling = ReviewCommentStore(
+        rootURL: URL(fileURLWithPath: "/repo"), branchName: "main", storageRoot: tmp
+    ).load()
+    check(reloadedSibling.first?.replies.map(\.body) == ["Done."], "applied reply is persisted")
+
+    // Directory enumeration order is unspecified; compare the contenders as a set.
+    if case .ambiguous(let ids) = ReviewCommentReplyService.applyReply(idPrefix: "aaaa", body: "x", storageRoot: tmp) {
+        check(Set(ids) == [
+            "aaaa1111-0000-4000-8000-000000000001",
+            "aaaa2222-0000-4000-8000-000000000002",
+        ], "shared prefix reports both contenders")
+    } else {
+        check(false, "shared prefix reports ambiguity")
+    }
+    check(ReviewCommentReplyService.applyReply(idPrefix: "ffffffff", body: "x", storageRoot: tmp) == .notFound,
+          "unknown prefix reports not found")
+    check(ReviewCommentReplyService.applyReply(idPrefix: "aaaa2222", body: "   ", storageRoot: tmp) == .emptyReply,
+          "whitespace-only reply is rejected")
 }
 
 // MARK: - SelectionGeometry (character-precise selection)

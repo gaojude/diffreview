@@ -290,6 +290,10 @@ private struct CommentCard: View {
                 .font(.system(size: fontSize))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 2)
+
+            if !comment.replies.isEmpty {
+                replies
+            }
         }
         .padding(12)
         .background(
@@ -311,6 +315,37 @@ private struct CommentCard: View {
 
     private var fileName: String {
         (comment.filePath as NSString).lastPathComponent
+    }
+
+    /// Replies sent from outside the app (`diffreview respond`) — the agent answering the
+    /// comment. Indented under the reviewer's text with a purple accent bar so the two
+    /// voices in the thread stay visually distinct. Same no-.textSelection rule as the body.
+    private var replies: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(comment.replies) { reply in
+                HStack(alignment: .top, spacing: 0) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Color.purple.opacity(0.6))
+                        .frame(width: 3)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("Agent", systemImage: "arrowshape.turn.up.left.fill")
+                            .font(.system(size: max(fontSize - 4, 8), weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(reply.body)
+                            .font(.system(size: max(fontSize - 1, 10)))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.purple.opacity(0.07))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+        .padding(.leading, 10)
     }
 
     /// The commented code, dedented so deeply indented selections don't read as noise, with
