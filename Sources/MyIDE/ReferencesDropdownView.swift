@@ -24,7 +24,12 @@ struct ReferencesDropdownView: View {
             header
             Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                // Plain VStack on purpose — same freeze class as the comments panel: a lazy
+                // stack's self-invalidating size estimation can livelock the main thread on
+                // macOS 26 (see CommentsPaneView.commentList), and this one's measured
+                // height even feeds back into the dropdown's own placement. Usage lists are
+                // small and rows are single-line; eager layout is exact and cheap.
+                VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(references.enumerated()), id: \.offset) { _, reference in
                         ReferenceRow(reference: reference, fontSize: fontSize) {
                             onOpen(reference)

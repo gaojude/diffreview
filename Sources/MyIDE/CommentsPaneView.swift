@@ -107,10 +107,20 @@ struct CommentsPaneView: View {
 
     // MARK: - List
 
+    // Deliberately NOT a LazyVStack: on macOS 26 a lazy stack of variable-height cards can
+    // wedge the whole app. Sampled from a real review (2026-07-16, v0.4.0): the lazy
+    // layout's placement pass kept invalidating its own size estimate
+    // (`LazySubviewPlacements.placeSubviews` → `LazyLayoutViewCache.invalidateSize`
+    // re-dirtying the graph, placed subviews inserted and removed over and over), so
+    // `GraphHost.flushTransactions()` never drained and the main thread pinned at 100%
+    // CPU inside a single runloop observer callback. Reply-bearing cards made heights
+    // estimate-hostile; the animated scroll-to-center rides on those estimates. A plain
+    // VStack has none of that machinery — a review is tens of cards at most, so building
+    // them all is nothing, and `scrollTo` targets exact geometry instead of estimates.
     private var commentList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(Array(controller.comments.enumerated()), id: \.element.id) { index, comment in
                         CommentCard(
                             comment: comment,
