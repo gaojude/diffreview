@@ -32,6 +32,11 @@ final class AppState: ObservableObject, Identifiable {
     /// Metadata for the branch/base currently shown by the content pane.
     @Published private(set) var changeTreeState: ChangeTreeState = .loading
 
+    /// Bumped by `refresh()`. Part of the content pane's document identity: the changed-file
+    /// list carries no content signal (editing an already-listed file leaves the context
+    /// equal), so the generation is what forces a rebuilt document on refresh.
+    @Published private(set) var refreshGeneration = 0
+
     /// The branch's pull request, when `gh` can resolve one. Drives the toolbar "open PR"
     /// button; stays nil (button hidden) when gh is missing, unauthenticated, or the
     /// branch has no PR.
@@ -83,7 +88,21 @@ final class AppState: ObservableObject, Identifiable {
         guard !hasLoadedChangeTree else { return }
         hasLoadedChangeTree = true
         reloadChangeTree()
+        reloadCommits()
+        detectPullRequest()
+    }
 
+    /// Re-reads everything the window shows from disk: the working tree moves while a
+    /// review is open (agents keep editing), and the reviewed branch gains commits and a
+    /// PR. Same loads as opening the project, minus the once-only guard.
+    func refresh() {
+        refreshGeneration += 1
+        reloadChangeTree()
+        reloadCommits()
+        detectPullRequest()
+    }
+
+    private func reloadCommits() {
         let rootURL = self.rootURL
         Task { @MainActor in
             let listed = await Task.detached(priority: .userInitiated) {
@@ -91,9 +110,12 @@ final class AppState: ObservableObject, Identifiable {
             }.value
             commits = listed
         }
+    }
 
-        // PR detection shells out to `gh` (network); it must never delay the diff. The
-        // button just appears when the answer lands.
+    /// PR detection shells out to `gh` (network); it must never delay the diff. The
+    /// button just appears when the answer lands.
+    private func detectPullRequest() {
+        let rootURL = self.rootURL
         Task { @MainActor in
             let detected = await Task.detached(priority: .utility) {
                 GitHubPullRequestLocator.detect(in: rootURL)
