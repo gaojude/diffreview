@@ -40,6 +40,13 @@ struct MyIDEApp: App {
             Self.scheduleCommentsFreezeProbe()
         }
 
+        if CommandLine.arguments.contains("--commit-freeze-probe") {
+            // Rebuilds the panel state of the 2026-07-16 commit freeze in its own window,
+            // commits a draft through the real controller, and measures CPU. Scheduled work
+            // only — launch continues below (the stray welcome window is harmless).
+            Self.scheduleCommentCommitFreezeProbe()
+        }
+
         let initialRootURLs = Self.rootURLArguments()
         let session = AppSession(initialRootURLs: initialRootURLs)
         _session = StateObject(wrappedValue: session)
@@ -442,6 +449,187 @@ struct MyIDEApp: App {
         }
     }
 
+    /// Regression probe for the comment-*commit* freeze (2026-07-16): with the panel already
+    /// showing reply-bearing cards, committing a draft appends a brand-new card to the
+    /// `LazyVStack` and animates a scroll-to-center at it in the same transaction. On
+    /// macOS 26 the lazy layout never converged — sampling the wedged app showed
+    /// `LazySubviewPlacements.placeSubviews` calling `LazyLayoutViewCache.invalidateSize`
+    /// (re-dirtying the graph mid-placement) with placed subviews inserted and removed over
+    /// and over, so `GraphHost.flushTransactions()` looped forever inside one runloop
+    /// observer callback and the main thread pinned at 100% CPU.
+    ///
+    /// The probe rebuilds that state shape-for-shape in its own window — the real
+    /// `CommentsPaneView` inside the same GeometryReader + HSplitView wrapper
+    /// `ContentPaneView` uses, two answered comments matching the incident's card sizes —
+    /// then walks the incident's interactions through the real controller: commit a third
+    /// comment (what ⌘⏎ does), re-select each answered card (what card and diff-marker
+    /// clicks do), and a posted click sweep. The review lives in a throwaway store under a
+    /// temporary directory, so nothing touches persisted reviews.
+    ///
+    /// Honesty note: the livelock is metric-sensitive (a font/width/scroll coincidence in
+    /// the estimation loop) and this rig never caught it storming pre-fix — the wedged
+    /// process sample above is the incident evidence. The fix converts the panel to a plain
+    /// `VStack`, which has no estimation machinery at all, making the sampled loop
+    /// structurally unreachable; this probe stands as the regression net for the class.
+    /// Run via `MyIDE --commit-freeze-probe`; prints CPU and exits 1 on storm.
+    private static nonisolated func probeCPUSeconds() -> Double {
+        var usage = rusage()
+        getrusage(RUSAGE_SELF, &usage)
+        func seconds(_ time: timeval) -> Double { Double(time.tv_sec) + Double(time.tv_usec) / 1_000_000 }
+        return seconds(usage.ru_utime) + seconds(usage.ru_stime)
+    }
+
+    @MainActor
+    private static func scheduleCommentCommitFreezeProbe() {
+        let cpuSeconds = Self.probeCPUSeconds
+
+        let controller = ReviewCommentsController()
+        // The incident review: two comments an agent already answered — the long replies
+        // are what make the existing cards tall — sorted above the line the draft targets.
+        let shortAnswered = ReviewComment(
+            filePath: "content/posts/making-navigations-instant.mdx",
+            origin: .diff,
+            startLine: 37,
+            endLine: 37,
+            codeText: String(repeating: "check out the optimizer skill for the full diagnostic loop ", count: 2),
+            body: "we should link to the skills page for it",
+            replies: [ReviewCommentReply(body: Array(
+                repeating: "Swapped the link to the published skills page and switched both call-to-action "
+                    + "entries to the same host so one skill name never points two places.",
+                count: 3
+            ).joined(separator: " "))]
+        )
+        let longAnswered = ReviewComment(
+            filePath: "content/posts/making-navigations-instant.mdx",
+            origin: .diff,
+            startLine: 242,
+            endLine: 243,
+            codeText: "agents are trained on goals they can verify,\nso a verifier plays to a known strength",
+            body: Array(
+                repeating: "I think we should make it clear that the reason we want more verifiers is "
+                    + "to understand the strengths of the agent and then design the framework around them.",
+                count: 9
+            ).joined(separator: "\n\n"),
+            replies: [ReviewCommentReply(body: Array(
+                repeating: "Rewrote the ending as its own closing paragraph in your sequence: why more "
+                    + "verifiers, then agent-first design, then the framework thesis, with the ask last.",
+                count: 6
+            ).joined(separator: " "))]
+        )
+        // Seed through the real persistence path: a throwaway store under a temporary
+        // directory holds the review, and `configurePersistence` loads it exactly the way
+        // an opening window would.
+        let probeStore = ReviewCommentStore(
+            rootURL: URL(fileURLWithPath: "/probe/fixture"),
+            branchName: "probe",
+            storageRoot: FileManager.default.temporaryDirectory
+                .appendingPathComponent("commit-freeze-probe-\(UUID().uuidString)")
+        )
+        probeStore.save([shortAnswered, longAnswered])
+        controller.configurePersistence(store: probeStore)
+
+        let commitDelay = 3.0
+        let measureSeconds = 5.0
+
+        DispatchQueue.main.async {
+            let window = NSWindow(
+                contentRect: NSRect(x: 120, y: 120, width: 1600, height: 900),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "commit freeze probe"
+            window.contentView = NSHostingView(rootView: CommentCommitFreezeProbeHarness(controller: controller))
+            window.makeKeyAndOrderFront(nil)
+
+            // Events are POSTED (queued), never sent synchronously — same rationale as the
+            // click probe above.
+            func postClick(at windowPoint: NSPoint) {
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    if let event = NSEvent.mouseEvent(
+                        with: type,
+                        location: windowPoint,
+                        modifierFlags: [],
+                        timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: window.windowNumber,
+                        context: nil,
+                        eventNumber: 0,
+                        clickCount: 1,
+                        pressure: 1
+                    ) {
+                        NSApp.postEvent(event, atStart: false)
+                    }
+                }
+            }
+
+            // The incident sequence, ~seconds apart like the real one: commit the third
+            // comment (append + select + animated scroll to the bottom), then go back to
+            // the answered cards — every card click and diff-marker click in the app lands
+            // on `selectedCommentID`, whose change animates a scroll-to-center through the
+            // lazily estimated tall cards. A posted click sweep closes with real events.
+            var verdicts: [String] = []
+            var phaseStart = 0.0
+            let phases: [(String, () -> Void)] = [
+                ("commit", {
+                    controller.beginDraft(CommentDraft(
+                        filePath: "content/posts/making-navigations-instant.mdx",
+                        origin: .diff,
+                        startLine: 244,
+                        endLine: 256,
+                        codeText: Array(repeating: "the closing section walks the three arguments in order", count: 13)
+                            .joined(separator: "\n")
+                    ))
+                    controller.draftText = "deserves its own section with a heading?"
+                    controller.commitDraft()
+                }),
+                ("select-first", { controller.selectedCommentID = shortAnswered.id }),
+                ("select-long", { controller.selectedCommentID = longAnswered.id }),
+                ("click", {
+                    let height = window.contentLayoutRect.height
+                    for offsetFromTop in stride(from: 120.0, through: 620.0, by: 100.0) {
+                        postClick(at: NSPoint(x: 180, y: height - offsetFromTop))
+                    }
+                }),
+            ]
+
+            // Chain: run phase, wait `measureSeconds`, report its CPU, next phase. Any
+            // phase that eats the wall clock is the storm; a wedged main thread never
+            // reaches the next phase and the watchdog reports instead.
+            func runPhase(_ index: Int) {
+                guard index < phases.count else {
+                    print("commit freeze probe: \(verdicts.joined(separator: ", "))")
+                    Foundation.exit(verdicts.contains(where: { $0.hasSuffix("STORMING") }) ? 1 : 0)
+                }
+                let (name, action) = phases[index]
+                action()
+                phaseStart = cpuSeconds()
+                DispatchQueue.main.asyncAfter(deadline: .now() + measureSeconds) {
+                    let burned = cpuSeconds() - phaseStart
+                    let storming = burned > measureSeconds * 0.5
+                    verdicts.append(String(format: "%@ %.2fs CPU/%.0fs %@",
+                                           name, burned, measureSeconds, storming ? "STORMING" : "quiet"))
+                    runPhase(index + 1)
+                }
+            }
+
+            // T+3s: the panel has laid out both answered cards.
+            DispatchQueue.main.asyncAfter(deadline: .now() + commitDelay) {
+                _ = window // keep the probe window alive for the whole run
+                runPhase(0)
+            }
+        }
+
+        // Watchdog on a background queue: if the main thread wedges (storm or deadlock), it
+        // never reaches the report above — decide from CPU alone and exit anyway.
+        DispatchQueue.global().asyncAfter(deadline: .now() + commitDelay + 4 * measureSeconds + 6.0) {
+            let total = cpuSeconds()
+            let storming = total > measureSeconds
+            print(String(format: "commit freeze probe (watchdog): main thread unresponsive, %.2fs total CPU — %@",
+                         total, storming ? "STORMING" : "wedged-but-quiet"))
+            Foundation.exit(storming ? 1 : 3)
+        }
+    }
+
     /// Headless harness for the review-comments flow: drives the real controller through
     /// draft → commit → copy and lays out the pane, without needing a window or Accessibility
     /// permission. Run via `MyIDE --comments-pane-self-test`; exits non-zero on failure.
@@ -760,6 +948,30 @@ final class ProjectWindowController: NSObject, NSWindowDelegate {
         if notification.object as? NSWindow === projectWindow {
             NSLog("MyIDE lifecycle: project window closing")
             projectWindow = nil
+        }
+    }
+}
+
+/// The `--commit-freeze-probe` stage: the real comments panel inside the same
+/// GeometryReader + HSplitView wrapper `ContentPaneView` mounts it in, so the panel is
+/// measured by the split view exactly as it is in a review window. The second pane stands
+/// in for the diff. Font size matches the incident configuration.
+private struct CommentCommitFreezeProbeHarness: View {
+    @ObservedObject var controller: ReviewCommentsController
+
+    var body: some View {
+        GeometryReader { outer in
+            HSplitView {
+                CommentsPaneView(controller: controller, fontSize: 23)
+                    .frame(
+                        minWidth: 280,
+                        idealWidth: max(outer.size.width * 0.25, 280),
+                        maxWidth: max(outer.size.width * 0.4, 320)
+                    )
+                Color(nsColor: .textBackgroundColor)
+                    .frame(minWidth: 520)
+                    .layoutPriority(1)
+            }
         }
     }
 }
