@@ -17,6 +17,7 @@ struct RootView: View {
         ContentPaneView(
             rootURL: appState.rootURL,
             changeTreeState: appState.changeTreeState,
+            refreshGeneration: appState.refreshGeneration,
             fontSize: appState.fontSize,
             diffLayout: appState.diffLayout,
             onDiffLayoutChange: { appState.setDiffLayout($0) },
@@ -52,6 +53,18 @@ struct RootView: View {
                     .help("Open PR #\(pullRequest.number) — \(pullRequest.title)")
                     .accessibilityIdentifier("open-pull-request")
                 }
+            }
+            // The working tree moves while a review is open (agents keep editing); refresh
+            // re-reads the change set from disk without reopening the project.
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    appState.refresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .help("Reload changes from disk (⌘R)")
+                .accessibilityIdentifier("refresh-changes")
             }
             // Jump between change blocks without scrolling through diff context.
             ToolbarItem(placement: .primaryAction) {

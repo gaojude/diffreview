@@ -30,6 +30,9 @@ struct ChangeJumpRequest: Equatable {
 struct ContentPaneView: View {
     let rootURL: URL
     let changeTreeState: AppState.ChangeTreeState
+    /// Folded into the document identity so a toolbar refresh reloads the pane even when
+    /// the refreshed context compares equal (content-only edits to already-listed files).
+    var refreshGeneration: Int = 0
     var fontSize: CGFloat = FontSizes.default
     /// Split (old|new) vs unified single-column diff; persisted app-wide.
     var diffLayout: DiffLayoutMode = .unified
@@ -436,16 +439,10 @@ struct ContentPaneView: View {
         case .loading:
             return "waiting"
         case .loaded(let context):
-            return Self.documentID(for: context)
+            return GitChangeSet.documentIdentity(for: context, refreshGeneration: refreshGeneration)
         case .notRepository:
             return "no-git"
         }
-    }
-
-    private static func documentID(for context: GitChangeContext) -> String {
-        // Scope is part of the identity: two sibling commits can share a parent (the same
-        // baseRef) and a file set whose hash collides, but must never share a document.
-        "document:\(context.branchName):\(context.baseRef ?? "worktree"):\(String(describing: context.scope)):\(context.files.hashValue)"
     }
 
     // MARK: - Highlighting & layout
@@ -1149,7 +1146,7 @@ struct ContentPaneView: View {
             return
         }
 
-        let id = Self.documentID(for: context)
+        let id = GitChangeSet.documentIdentity(for: context, refreshGeneration: refreshGeneration)
         if loadedDocumentID == id, !loadedEntries.isEmpty {
             return // already showing this change set
         }

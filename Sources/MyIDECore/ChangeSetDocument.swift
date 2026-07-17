@@ -158,6 +158,15 @@ public extension GitChangeSet {
         ChangeSetDocument.build(entries: loadDocumentEntries(for: context), collapsedPaths: collapsedPaths)
     }
 
+    /// Identity of the document a context would load. Scope is part of the identity: two
+    /// sibling commits can share a parent (the same baseRef) and a file set whose hash
+    /// collides, but must never share a document. The changed-file list carries no content
+    /// signal — editing an already-listed file leaves the context equal — so an explicit
+    /// refresh bumps `refreshGeneration` to force a distinct identity (and thus a reload).
+    static func documentIdentity(for context: GitChangeContext, refreshGeneration: Int) -> String {
+        "document:\(context.branchName):\(context.baseRef ?? "worktree"):\(String(describing: context.scope)):\(context.files.hashValue):r\(refreshGeneration)"
+    }
+
     /// Files above this size skip whole-file text capture (used for line-mapped syntax
     /// highlighting) — the diff still renders, just without highlighting.
     static let maxHighlightableFileSize = 1_500_000

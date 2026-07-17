@@ -1184,6 +1184,32 @@ do {
     } else {
         check(false, "large untracked diff loads past the 64 KB pipe buffer")
     }
+
+    // Refresh: a content-only edit to an already-listed file leaves the reloaded context
+    // equal (the file list carries no content signal), so the toolbar refresh relies on
+    // the bumped generation to force a new document identity — and the fresh entry load
+    // to pick the edit up from disk. Guards the refresh button against silently no-oping.
+    if case .repository(let before) = GitChangeSet.load(for: tmp) {
+        try! "changed\nagent edit\n".write(
+            to: nested.appendingPathComponent("changed.swift"), atomically: true, encoding: .utf8)
+        if case .repository(let after) = GitChangeSet.load(for: tmp) {
+            check(before == after, "content-only edit reloads an equal context")
+            check(GitChangeSet.documentIdentity(for: before, refreshGeneration: 0)
+                    == GitChangeSet.documentIdentity(for: after, refreshGeneration: 0),
+                  "same generation keeps the same document identity")
+            check(GitChangeSet.documentIdentity(for: before, refreshGeneration: 0)
+                    != GitChangeSet.documentIdentity(for: after, refreshGeneration: 1),
+                  "bumped refresh generation forces a new document identity")
+            let refreshed = GitChangeSet.loadDocumentEntries(for: after)
+            check(refreshed.first(where: { $0.file.path == "nested/changed.swift" })?
+                    .newText?.contains("agent edit") == true,
+                  "refreshed entries read the edited content from disk")
+        } else {
+            check(false, "reloads context after content-only edit")
+        }
+    } else {
+        check(false, "loads context before content-only edit")
+    }
 }
 
 // MARK: - GitHubPullRequestLocator: gh output parsing and process environment
